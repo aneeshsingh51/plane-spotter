@@ -1,18 +1,19 @@
 // app.js — wiring: state, flow, rendering. Geometry lives in geo.js, ranking in score.js.
-import { haversine, bearing, lookAngles, selfTest, norm360, dAz, MI, FT } from "./geo.js?v=15";
-import { store, fetchPositions, normalizeResponse, lookupRoute, lookupAircraft, lookupPhoto, lookupElevation, fetchMetar, linkState, failing, pruneCache, WORKER } from "./data.js?v=15";
-import { rank, incoming, skyState, airportContext, badges, observerHeights, routeFits } from "./score.js?v=15";
-import { Compass, getGPS, steadyDetector, platform } from "./sensors.js?v=15";
-import { Radar, SkyView } from "./radar.js?v=15";
-import { TYPES, AIRLINES, airportLabel, PILOT_JOKES, WILLIS } from "./tables.js?v=15";
+import { haversine, bearing, lookAngles, selfTest, norm360, dAz, MI, FT, polyFrame, polySelfIntersects, polySortByAngle } from "./geo.js?v=16";
+import { store, fetchPositions, normalizeResponse, lookupRoute, lookupAircraft, lookupPhoto, lookupElevation, fetchMetar, linkState, failing, pruneCache, WORKER } from "./data.js?v=16";
+import { rank, incoming, skyState, airportContext, badges, observerHeights, routeFits } from "./score.js?v=16";
+import { Compass, getGPS, steadyDetector, platform } from "./sensors.js?v=16";
+import { Radar, SkyView } from "./radar.js?v=16";
+import { TYPES, AIRLINES, airportLabel, PILOT_JOKES, WILLIS } from "./tables.js?v=16";
 
 // ---------------------------------------------------------------- constants
-const VERSION = 15;
+const VERSION = 16;
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has("debug");
 const CHICAGO = { lat: 41.90, lon: -87.63, groundM: 181 };
 const DEFAULTS = {
   home: { ...CHICAGO }, eyeM: 30, geoidN: -34, window: null, skyline: [{ az: 0, el: 3 }], top: 90,
+  poly: null, // traced view outline [{az, el}] — overrides window/skyline/top when set
   declination: -4.2, headingOffset: 0, radiusKm: 40, rangeMi: 12,
   autoRefresh: false, wake: false, ping: false, custom: false,
 };
@@ -32,6 +33,7 @@ const S = {
   snap: null, fetching: null, error: null, wx: null,
   chips: new Set(), chipsTouched: false,
   aim: null, aimMode: false, result: null, inc: [], selected: null, tapAt: 0, rankMs: 0,
+  cbuf: [], traceMode: false, trace: [],
   details: {}, view: "scope", demo: null, jokeI: Math.floor(Math.random() * PILOT_JOKES.length),
   log: store.get("ps.log") || [],
 };
@@ -58,6 +60,7 @@ function readSetupHash() {
     if (Number.isFinite(j.sky)) st.skyline = [{ az: 0, el: j.sky }];
     else if (Array.isArray(j.sky)) st.skyline = j.sky.map(([az, el]) => ({ az, el }));
     if (Number.isFinite(j.top)) st.top = j.top;
+    if (Array.isArray(j.view) && j.view.length >= 3) st.poly = j.view.map(([az, el]) => ({ az: +az, el: +el }));
     if (Number.isFinite(j.decl)) st.declination = j.decl;
     if (Number.isFinite(j.off)) st.headingOffset = j.off;
     st.custom = true;
@@ -71,7 +74,8 @@ function makeSetupLink() {
   const j = { lat: st.home.lat, lon: st.home.lon, ground: st.home.groundM, eye: st.eyeM, geoid: st.geoidN,
     win: st.window ? [st.window.azFrom, st.window.azTo] : undefined,
     sky: st.skyline.length === 1 ? st.skyline[0].el : st.skyline.map(p => [Math.round(p.az), +p.el.toFixed(1)]),
-    top: st.top, decl: st.declination, off: st.headingOffset };
+    top: st.top, decl: st.declination, off: st.headingOffset,
+    view: st.poly ? st.poly.map(p => [+p.az.toFixed(1), +p.el.toFixed(1)]) : undefined };
   return location.origin + location.pathname + "#setup=" + b64u.enc(JSON.stringify(j));
 }
 
@@ -81,14 +85,24 @@ function setObserver(lat, lon, groundM, source) {
   S.locSource = source;
   S.away = haversine(lat, lon, S.settings.home.lat, S.settings.home.lon) > 1000;
 }
+let frameCache = { key: null, frame: null };
+function viewFrame() {
+  const p = S.settings.poly; if (!p || p.length < 3) return null;
+  const key = JSON.stringify(p);
+  if (frameCache.key !== key) frameCache = { key, frame: polyFrame(p) };
+  return frameCache.frame;
+}
 function mask() {
   const st = S.settings;
   const generic = S.away || S.demo; // demo replays traffic at the generic default, so personal masks don't apply
+  const f = !generic && viewFrame();
+  if (f) return { frame: f, poly: st.poly, azFrom: f.azFrom, azTo: f.azTo };
   if (!st.window || generic) return { azFrom: 0, azTo: 360, skyline: generic ? [{ az: 0, el: 3 }] : st.skyline, top: generic ? 90 : st.top };
   return { azFrom: st.window.azFrom, azTo: st.window.azTo, skyline: st.skyline, top: st.top };
 }
 function facing() {
   if (S.aim) return S.aim.az;
+  const f = !S.away && !S.demo && viewFrame(); if (f) return f.center;
   const w = S.settings.window;
   if (w && !S.away && !S.demo) return norm360(w.azFrom + (norm360(w.azTo - w.azFrom)) / 2);
   return compass.state === "live" ? compass.az : 180;
@@ -116,7 +130,7 @@ radar.rangeMi = S.settings.rangeMi;
 radar.onRange = r => { S.settings.rangeMi = r; saveSettings(); $("#btnRange").textContent = r + " mi"; };
 $("#btnRange").textContent = radar.rangeMi + " mi";
 $("#btnRange").onclick = () => radar.cycleRange();
-const sky = new SkyView($("#sky"), { onTap: p => lockAim(p.az, p.el, "tap") });
+const sky = new SkyView($("#sky"), { onTap: p => S.traceMode ? addCorner(p.az, p.el) : lockAim(p.az, p.el, "tap") });
 
 function provider(hex) {
   const a = S.snap?.ac.find(x => x.hex === hex); if (!a || !S.obs) return null;
@@ -129,7 +143,8 @@ function provider(hex) {
 }
 function updateRadar() {
   const st = S.settings;
-  radar.window = st.window && !S.away && !S.demo ? st.window : null;
+  const m = mask();
+  radar.window = m.azFrom === 0 && m.azTo === 360 ? null : { azFrom: m.azFrom, azTo: m.azTo };
   if (!S.snap || !S.obs) { radar.setTargets([], provider); return; }
   const ids = S.snap.ac.filter(a => !a.onGround && haversine(S.obs.lat, S.obs.lon, a.lat, a.lon) <= st.radiusKm * 1000).map(a => a.hex);
   radar.setTargets(ids, provider);
@@ -137,7 +152,9 @@ function updateRadar() {
 }
 function drawSky() {
   sky.mask = mask(); sky.facing = facing(); sky.aim = S.aim; sky.lockId = S.result?.ranked[0]?.a.hex;
-  sky.reticle = S.aimMode && compass.state === "live" ? { az: compass.az, el: compass.el } : null;
+  sky.reticle = (S.aimMode || S.traceMode) && compass.state === "live" ? { az: compass.az, el: compass.el } : null;
+  sky.trace = S.traceMode ? S.trace : null;
+  sky.fixedRange = S.traceMode ? traceRange() : null;
   sky.points = S.snap && S.obs ? S.snap.ac.filter(a => !a.onGround).map(a => {
     const s = skyState(a, S.obs, mask(), Date.now());
     return { id: a.hex, az: s.az, el: s.el, state: s.state, label: (a.flight || a.reg || a.hex).toUpperCase() };
@@ -394,12 +411,15 @@ function renderAlert() {
 }
 function renderBanner() {
   const st = S.settings, b = $("#banner");
-  if (S.demo) b.innerHTML = `Demo: recorded traffic over central Chicago, full sky. Live data is off.`;
+  if (S.traceMode) b.innerHTML = `<b>Tracing.</b> Sight along the phone's top edge. Mark each corner where open sky meets a building or the frame, in order around the edge. Full steps below the chart.`;
+  else if (S.demo) b.innerHTML = `Demo: recorded traffic over central Chicago, full sky. Live data is off.`;
   else if (S.away) b.innerHTML = `Away from home: using full sky here. Your window applies at home.`;
-  else if (!st.custom && !st.window) b.innerHTML = `Using defaults: full sky, ${fmt(st.eyeM)} m height. <button data-open>Calibrate</button> for better matches.`;
-  else if (st.window) b.innerHTML = `Window <b>${pad3(st.window.azFrom)}°–${pad3(st.window.azTo)}°</b>, sky from ${fmt(Math.min(...st.skyline.map(p => p.el)))}° to ${fmt(st.top)}°, eye ${fmt(st.eyeM)} m.`;
+  else if (viewFrame()) { const f = viewFrame(); b.innerHTML = `Your traced view: <b>${pad3(f.azFrom)}°–${pad3(f.azTo)}°</b>, ${fmt(f.elMin)}° to ${fmt(f.elMax)}° up, ${st.poly.length} corners. <button data-trace>Retrace</button>`; }
+  else if (!st.custom && !st.window) b.innerHTML = `Using defaults: full sky, ${fmt(st.eyeM)} m height. <button data-trace>Trace your view</button> for better matches.`;
+  else if (st.window) b.innerHTML = `Window <b>${pad3(st.window.azFrom)}°–${pad3(st.window.azTo)}°</b>, sky from ${fmt(Math.min(...st.skyline.map(p => p.el)))}° to ${fmt(st.top)}°. <button data-trace>Trace your view</button> for the real outline.`;
   else b.innerHTML = `Full sky, eye ${fmt(st.eyeM)} m.`;
   b.querySelector("[data-open]")?.addEventListener("click", () => openSettings());
+  b.querySelector("[data-trace]")?.addEventListener("click", () => startTrace());
 }
 function renderFooter() {
   const sn = S.snap;
@@ -441,6 +461,11 @@ function nightCheck() {
 const steady = steadyDetector(1, 800);
 let lastLock = 0;
 compass.on(() => {
+  if (compass.state === "live") {
+    const t = performance.now(); S.cbuf.push({ t, az: compass.az, el: compass.el });
+    while (S.cbuf.length && t - S.cbuf[0].t > 2500) S.cbuf.shift();
+    if (S.traceMode && S.view === "sky") drawSky();
+  }
   if (compass.state === "live" && lampOpen === "cmp" && $("#lampMsg").classList.contains("red")) { lampOpen = null; $("#lampMsg").hidden = true; }
   renderLamps();
   renderTray();
@@ -460,10 +485,21 @@ const HINT_LIVE = "Point the top edge of your phone at the plane and hold still.
  * one line of status above one big button (Turn on compass → Lock).
  */
 function renderTray() {
-  const line = $("#trayLine"), chips = $("#chips"), btn = $("#btnSee");
-  line.hidden = !S.aimMode; chips.hidden = S.aimMode;
+  const line = $("#trayLine"), chips = $("#chips"), btn = $("#btnSee"), keys = $("#traceKeys");
+  const mode = S.traceMode ? "trace" : S.aimMode ? "aim" : "spot";
+  line.hidden = mode === "spot"; chips.hidden = mode !== "spot"; keys.hidden = mode !== "trace";
   let label = "I see a plane", text = "";
-  if (S.aimMode) {
+  if (mode === "trace") {
+    const c = compass.state, n = S.trace.length, cc = compassCopy();
+    if (c === "live") {
+      label = "Mark corner " + (n + 1);
+      text = `<b>${fmtM(compass.az, 1)}°</b> az <b>${fmtM(compass.el, 1)}°</b> el · ${n === 0 ? "Aim at a corner of open sky" : n < 3 ? `Next corner (${3 - n} more minimum)` : "Next corner, or Save view"}`;
+    } else if (c === "asking" || c === "waiting") { label = "Starting compass…"; text = esc(cc.short); }
+    else if (c === "unsupported" || c === "no-heading") { label = "Save view"; text = "No compass: tap the chart at each corner instead."; }
+    else { label = "Turn on compass"; text = esc(cc.short); }
+    $("#btnTraceUndo").disabled = !n; $("#btnTraceSave").disabled = n < 3;
+    $("#traceList").innerHTML = n ? S.trace.map((p, i) => `<li>${i + 1}. <b>${fmtM(p.az, 1)}°</b> az, <b>${fmtM(p.el, 1)}°</b> el</li>`).join("") : "";
+  } else if (mode === "aim") {
     const c = compass.state, cc = compassCopy();
     if (c === "live") { label = "Lock"; text = `<b>${fmtM(compass.az, 1)}°</b> az <b>${fmtM(compass.el, 1)}°</b> el · ${S.steady ? "Locking…" : "Hold still to lock"}`; }
     else if (c === "asking" || c === "waiting") { label = "Starting compass…"; text = esc(cc.short); }
@@ -480,6 +516,7 @@ function renderTray() {
   if (line.dataset.html !== text) { line.innerHTML = text; line.dataset.html = text; }
 }
 function setAimMode(on) {
+  if (on && S.traceMode) setTraceMode(false);
   S.aimMode = on;
   $("#btnAim").setAttribute("aria-pressed", on);
   $("#aimPanel").hidden = !on;
@@ -502,6 +539,66 @@ function lockAim(az, el, how) {
   setAimMode(false);
   runMatch();
 }
+// ---------------------------------------------------------------- trace my view
+// Mark the corners of the open sky with the phone's top edge; they become the visibility outline.
+function traceRange() {
+  const pts = S.trace.concat(compass.state === "live" ? [{ az: compass.az, el: compass.el }] : []);
+  const c = S.traceCenter;
+  let lo = -75, hi = 75;
+  for (const p of pts) { const u = dAz(c, p.az); lo = Math.min(lo, u - 15); hi = Math.max(hi, u + 15); }
+  return [c + lo, c + hi];
+}
+function setTraceMode(on) {
+  if (on && S.aimMode) setAimMode(false);
+  S.traceMode = on;
+  $("#tracePanel").hidden = !on;
+  renderBanner();
+  if (on) {
+    S.trace = [];
+    const f = viewFrame(), w = S.settings.window;
+    S.traceCenter = f ? f.center : w ? norm360(w.azFrom + norm360(w.azTo - w.azFrom) / 2) : compass.state === "live" ? compass.az : 195;
+    setView("sky"); window.scrollTo({ top: 0 });
+  }
+  renderTray(); drawSky();
+}
+function startTrace() {
+  $("#dlgSettings").open && $("#dlgSettings").close();
+  if (compass.state !== "live") compass.start(); // from the tap, so iPhone can show its prompt
+  setTraceMode(true);
+}
+function addCorner(az, el) {
+  S.trace.push({ az: norm360(az), el: Math.max(0, Math.min(90, el)) });
+  if (navigator.vibrate) try { navigator.vibrate(15); } catch {}
+  renderTray(); drawSky();
+}
+/** Median of readings from 0.7 s to 0.12 s before the tap, so the tap's own jolt doesn't count. */
+function markCorner() {
+  const t = performance.now();
+  const w = S.cbuf.filter(r => t - r.t >= 120 && t - r.t <= 700);
+  if (!w.length) return addCorner(compass.az, compass.el);
+  const ref = w[w.length - 1].az;
+  const us = w.map(r => dAz(ref, r.az)).sort((a, b) => a - b), els = w.map(r => r.el).sort((a, b) => a - b);
+  addCorner(ref + us[us.length >> 1], els[els.length >> 1]);
+}
+function saveTrace() {
+  if (S.trace.length < 3) { $("#trayLine").textContent = "Mark at least 3 corners first."; return; }
+  let poly = S.trace.map(p => ({ az: +p.az.toFixed(1), el: +p.el.toFixed(1) }));
+  let note = "";
+  if (polySelfIntersects(polyFrame(poly).pts)) { poly = polySortByAngle(poly); note = " The corners were out of order, so I put them in order around the middle."; }
+  const st = S.settings; st.poly = poly; st.custom = true; saveSettings();
+  setTraceMode(false); setView("sky");
+  renderBanner(); updateRadar(); if (S.result) runMatch({ quiet: true });
+  const f = viewFrame();
+  const el = $("#notice"); el.hidden = false;
+  el.innerHTML = `<div class="msg">View saved: ${poly.length} corners, ${pad3(f.azFrom)}°–${pad3(f.azTo)}°, ${fmt(f.elMin)}° to ${fmt(f.elMax)}° up.${esc(note)} Copy your setup link again so your bookmark includes it.
+    <div class="acts"><button class="key small" data-act="copy">Copy setup link</button><button class="key small" data-act="ok">Done</button></div></div>`;
+  el.querySelector('[data-act="copy"]').onclick = async e => { try { await navigator.clipboard.writeText(makeSetupLink()); e.target.textContent = "Copied. Keep it private"; } catch { openSettings(); } };
+  el.querySelector('[data-act="ok"]').onclick = () => { el.hidden = true; };
+}
+$("#btnTraceUndo").onclick = () => { S.trace.pop(); renderTray(); drawSky(); };
+$("#btnTraceSave").onclick = saveTrace;
+$("#btnTraceCancel").onclick = () => setTraceMode(false);
+
 // Viewfinder: rear camera with a crosshair; pointing switches to the camera axis.
 let camStream = null;
 $("#btnCam").onclick = async () => {
@@ -535,6 +632,13 @@ function feedback() {
 
 // ---------------------------------------------------------------- main button
 $("#btnSee").onclick = async () => {
+  if (S.traceMode) {
+    const c = compass.state;
+    if (c === "live") return markCorner();
+    if (c === "unsupported" || c === "no-heading") return saveTrace();
+    if (c !== "asking" && c !== "waiting") compass.start();
+    return;
+  }
   if (S.aimMode) {
     const c = compass.state;
     if (c === "live") return lockAim(compass.az, compass.el, "button");
@@ -603,7 +707,11 @@ function openSettings(focus) {
     <label class="row">Search radius <span class="val" id="radV">${st.radiusKm} km</span></label>
     <input type="range" min="10" max="90" step="5" value="${st.radiusKm}" id="inRad" aria-label="Search radius">
   </fieldset>
-  <fieldset><legend class="placard">Window</legend>
+  <fieldset><legend class="placard">Your view</legend>
+    <p>${viewFrame() ? `Traced: <span class="val">${st.poly.length}</span> corners, <span class="val">${pad3(viewFrame().azFrom)}°–${pad3(viewFrame().azTo)}°</span>, ${fmt(viewFrame().elMin)}° to ${fmt(viewFrame().elMax)}° up. This outline overrides the simple window below.` : "Not traced yet. Trace the outline of the sky you can see: building edges, rooftops and window frame."}</p>
+    <div class="btns"><button class="key small lit" aria-pressed="true" id="btnStartTrace">${viewFrame() ? "Retrace my view" : "Trace my view"}</button>${viewFrame() ? `<button class="key small" id="btnClearTrace">Clear traced view</button>` : ""}</div>
+  </fieldset>
+  <fieldset><legend class="placard">Simple window (fallback)</legend>
     <p>${st.window ? `Open from <span class="val">${pad3(st.window.azFrom)}°</span> to <span class="val">${pad3(st.window.azTo)}°</span>.` : "Full sky (no window set)."} Point the phone's top edge at each edge of the window.</p>
     <div class="btns"><button class="key small" id="btnWinL">Mark left edge</button><button class="key small" id="btnWinR">Mark right edge</button><button class="key small" id="btnWinFull">Use full sky</button></div>
     <div class="pair"><input type="number" id="inWinA" placeholder="Left az°" value="${st.window ? st.window.azFrom : ""}" aria-label="Left edge azimuth"><input type="number" id="inWinB" placeholder="Right az°" value="${st.window ? st.window.azTo : ""}" aria-label="Right edge azimuth"></div>
@@ -633,6 +741,8 @@ function openSettings(focus) {
     <div class="btns"><button class="key small" id="btnLink">Copy setup link</button><button class="key small" id="btnClear">Clear saved data</button></div>
     <p id="linkMsg"></p>
   </fieldset>`;
+  $("#btnStartTrace").onclick = () => startTrace();
+  $("#btnClearTrace") && ($("#btnClearTrace").onclick = () => { st.poly = null; saveSettings(); renderBanner(); updateRadar(); if (S.result) runMatch({ quiet: true }); openSettings(); });
   const need = (fn, msgEl) => () => { if (compass.state !== "live") { $(msgEl).textContent = "Turn on the compass first: tap Aim, then Turn on compass."; return; } fn(); };
   const done = () => { saveSettings(); setObserver(S.obs.lat, S.obs.lon, S.obs.groundM, S.locSource); renderBanner(); updateRadar(); if (S.result) runMatch({ quiet: true }); };
   $("#btnSetLoc").onclick = async () => {
@@ -724,6 +834,9 @@ function renderDebug() {
   $("#simH").oninput = sim; $("#simT").oninput = sim;
   window.__selfTest = t;
 }
+
+// keep page content clear of the thumb tray, whatever it currently holds
+try { new ResizeObserver(([e]) => document.documentElement.style.setProperty("--tray-h", Math.ceil(e.target.getBoundingClientRect().height) + "px")).observe(document.querySelector(".tray")); } catch {}
 
 // ---------------------------------------------------------------- boot
 async function boot() {

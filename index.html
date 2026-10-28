@@ -6,9 +6,9 @@
 <title>Plane Spotter</title>
 <meta name="description" content="Tap when you see a plane. Get the flight, type, route and a confidence score.">
 <meta name="theme-color" content="#2a2e28">
-<link rel="manifest" href="manifest.webmanifest?v=15">
-<link rel="icon" href="icons/icon.svg?v=15" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=15">
+<link rel="manifest" href="manifest.webmanifest?v=16">
+<link rel="icon" href="icons/icon.svg?v=16" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=16">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -16,9 +16,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=B612:wght@400;700&family=B612+Mono&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/app.css?v=15">
+<link rel="stylesheet" href="css/app.css?v=16">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.9.0/suncalc.min.js" defer></script>
-<script type="module" src="js/app.js?v=15"></script>
+<script type="module" src="js/app.js?v=16"></script>
 </head>
 <body>
 <div class="app">
@@ -33,6 +33,7 @@
   </header>
   <div id="lampMsg" class="msg" hidden></div>
   <div id="alert" hidden></div>
+  <div id="notice" hidden></div>
   <p id="banner" class="note"></p>
 
   <div class="bezel" id="bezel">
@@ -59,6 +60,19 @@
     </div>
   </section>
 
+  <section class="trace" id="tracePanel" hidden>
+    <h2 class="placard">Trace my view</h2>
+    <ol class="steps">
+      <li>Stand where you usually watch, a step back from the metal frame.</li>
+      <li>Hold the phone flat and sight along its top edge, from the middle of the bottom edge to the middle of the top edge.</li>
+      <li>Aim at a corner where open sky meets a building or the window frame. Hold still and press <b>Mark corner</b>.</li>
+      <li>Go around the edge of the open sky in order: down the building edge, along the rooftops, up the window frame, across the window top. Add a corner wherever the outline bends. 6–12 corners is plenty.</li>
+      <li>Press <b>Save view</b>.</li>
+    </ol>
+    <p class="note">No compass? Tap the chart where each corner is.</p>
+    <ul class="pts" id="traceList"></ul>
+  </section>
+
   <section class="results" id="results" aria-live="polite"></section>
   <section id="incomingSec" hidden>
     <h2 class="placard">Incoming, next 2 min</h2>
@@ -73,6 +87,11 @@
 <div class="tray">
   <div class="tray-in">
     <p class="tray-line" id="trayLine" aria-live="polite" hidden></p>
+    <div class="keys" id="traceKeys" hidden>
+      <button class="key" id="btnTraceUndo">Undo</button>
+      <button class="key" id="btnTraceCancel">Cancel</button>
+      <button class="key lit" aria-pressed="true" id="btnTraceSave">Save view</button>
+    </div>
     <div class="chips" id="chips" role="group" aria-label="What you see">
       <button class="chip" data-chip="high" aria-pressed="false">High &amp; small</button>
       <button class="chip" data-chip="low" aria-pressed="false">Low &amp; big</button>

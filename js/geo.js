@@ -101,12 +101,71 @@ export function inAzRange(az, from, to) {
 }
 
 /**
+ * A traced view outline: polygon of {az, el} corners, in the order they were marked.
+ * Work in a local frame around the outline's circular-mean azimuth so it never wraps at 0/360:
+ *   u = signed azimuth offset from centre (deg), v = elevation (deg).
+ */
+export function polyFrame(poly) {
+  let sx = 0, sy = 0;
+  for (const p of poly) { sx += Math.cos(rad(p.az)); sy += Math.sin(rad(p.az)); }
+  const center = norm360(deg(Math.atan2(sy, sx)));
+  const pts = poly.map(p => ({ u: dAz(center, p.az), v: p.el }));
+  const us = pts.map(p => p.u), vs = pts.map(p => p.v);
+  return { center, pts, azFrom: norm360(center + Math.min(...us)), azTo: norm360(center + Math.max(...us)),
+    elMin: Math.min(...vs), elMax: Math.max(...vs) };
+}
+
+/** Do any two non-adjacent edges cross? (a self-crossing outline means points were marked out of order) */
+export function polySelfIntersects(pts) {
+  const n = pts.length, cross = (a, b, c) => (b.u - a.u) * (c.v - a.v) - (b.v - a.v) * (c.u - a.u);
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    if (j === i + 1 || (i === 0 && j === n - 1)) continue;
+    const a = pts[i], b = pts[(i + 1) % n], c = pts[j], d = pts[(j + 1) % n];
+    if (cross(a, b, c) * cross(a, b, d) < 0 && cross(c, d, a) * cross(c, d, b) < 0) return true;
+  }
+  return false;
+}
+
+/** Reorder corners by angle around their centroid. Fixes out-of-order marking for any star-shaped view. */
+export function polySortByAngle(poly) {
+  const f = polyFrame(poly);
+  const cu = f.pts.reduce((s, p) => s + p.u, 0) / f.pts.length, cv = f.pts.reduce((s, p) => s + p.v, 0) / f.pts.length;
+  return poly.map((p, i) => ({ p, a: Math.atan2(f.pts[i].v - cv, f.pts[i].u - cu) })).sort((x, y) => x.a - y.a).map(x => x.p);
+}
+
+/**
+ * Signed angular distance (deg) from a sky direction to a traced outline: + inside, - outside.
+ * Distances use (u·cos el, v) so azimuth gaps shrink with elevation like they do on the sky.
+ */
+export function polyMargin(az, el, frame) {
+  const u = dAz(frame.center, az), v = el, pts = frame.pts, n = pts.length;
+  let inside = false;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const a = pts[i], b = pts[j];
+    if ((a.v > v) !== (b.v > v) && u < (b.u - a.u) * (v - a.v) / (b.v - a.v) + a.u) inside = !inside;
+  }
+  const k = Math.cos(rad(Math.min(Math.abs(el), 89)));
+  let best = Infinity;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const ax = pts[j].u * k, ay = pts[j].v, bx = pts[i].u * k, by = pts[i].v, px = u * k, py = v;
+    const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+    const t = L ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L)) : 0;
+    best = Math.min(best, Math.hypot(px - (ax + t * dx), py - (ay + t * dy)));
+  }
+  return inside ? best : -best;
+}
+
+/**
  * Visibility of a sky direction through the window.
- * mask = { azFrom, azTo, skyline:[{az,el}] , top }
+ * mask = { poly:frame } (traced outline)  or  { azFrom, azTo, skyline:[{az,el}], top }
  * margin (deg) > 0 means inside; negative means how far outside.
  * state: 'visible' | 'marginal' (up to 5° outside: "may be hidden") | 'hidden'.
  */
 export function visibility(az, el, mask) {
+  if (mask.frame) {
+    const margin = polyMargin(az, el, mask.frame);
+    return { margin, state: margin >= 0 ? "visible" : margin >= -5 ? "marginal" : "hidden", floor: mask.frame.elMin };
+  }
   const full = mask.azFrom === 0 && mask.azTo === 360;
   let azMargin = Infinity;
   if (!full) {
@@ -187,5 +246,9 @@ export function selfTest() {
   // compass sanity: phone flat->tilted up, alpha=165 means top edge at az 195
   const p = pointingFromOrientation(165, 45, 0, 0);
   out.push(T("6 compass top-edge az (α=165,β=45)", p.az, 195), T("6 compass el", p.el, 45));
+  // traced outline: an L-shaped view (a near tower cuts the lower-left corner)
+  const fr = polyFrame([{ az: 175, el: 40 }, { az: 225, el: 40 }, { az: 225, el: 12 }, { az: 195, el: 12 }, { az: 195, el: 25 }, { az: 175, el: 25 }]);
+  out.push(T("7 outline: inside, 5° below top", polyMargin(210, 35, fr), 5), T("7 outline: in the cut-out corner, 10° az from the tower edge", polyMargin(185, 15, fr), -10 * Math.cos(rad(15))),
+    T("7 outline: 4° right of edge at el 30 (az gap × cos el)", polyMargin(229, 30, fr), -4 * Math.cos(rad(30))));
   return out;
 }

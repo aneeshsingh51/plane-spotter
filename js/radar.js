@@ -2,7 +2,7 @@
 // Authentic touches: blips repaint only when the sweep passes them (one rotation = 4.8 s),
 // a blue-white flash on paint that decays to a slow yellow-green afterglow,
 // ARTS-style data blocks (callsign / altitude in hundreds + trend / ground speed).
-import { norm360, dAz, skylineAt } from "./geo.js?v=15";
+import { norm360, dAz, skylineAt } from "./geo.js?v=16";
 
 const C = {
   glass: "#0b130e", phosphor: "185,220,74", flash: "217,236,255", grid: "185,220,74",
@@ -183,7 +183,10 @@ export class SkyView {
     });
   }
   _range() {
-    const m = this.mask; if (!m || (m.azFrom === 0 && m.azTo === 360)) { const c = this.facing ?? 180; return [c - 180, c + 180]; }
+    if (this.fixedRange) return this.fixedRange;
+    const m = this.mask;
+    if (m && m.frame) { const span = Math.max(50, norm360(m.azTo - m.azFrom)); const c = m.frame.center; return [c - span / 2 - 15, c + span / 2 + 15]; }
+    if (!m || (m.azFrom === 0 && m.azTo === 360)) { const c = this.facing ?? 180; return [c - 180, c + 180]; }
     const span = norm360(m.azTo - m.azFrom) || 360; return [m.azFrom - 12, m.azFrom + span + 12];
   }
   _geom(w, h) { const pad = { l: 34, r: 10, t: 12, b: 24 }; return { pad, W: w - pad.l - pad.r, H: h - pad.t - pad.b }; }
@@ -204,7 +207,13 @@ export class SkyView {
     // shaded: skyline (below mask), window top, outside window
     const m = this.mask;
     ctx.fillStyle = "rgba(42,46,40,0.92)";
-    if (m) {
+    const polyPath = poly => { ctx.beginPath(); poly.forEach((p, i) => { const [x, y] = this._xy(p.az, p.el, w, h); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.closePath(); };
+    if (m && m.frame && !this.trace) {
+      // traced outline: everything is wall except the outline you marked
+      ctx.fillRect(pad.l, pad.t, W, H);
+      polyPath(m.poly); ctx.fillStyle = C.glass; ctx.fill();
+      ctx.strokeStyle = `rgba(${C.phosphor},0.55)`; ctx.setLineDash([4, 4]); ctx.stroke(); ctx.setLineDash([]);
+    } else if (m && !this.trace) {
       ctx.beginPath(); ctx.moveTo(pad.l, pad.t + H);
       for (let i = 0; i <= 120; i++) {
         const az = a0 + (i / 120) * (a1 - a0);
@@ -224,7 +233,7 @@ export class SkyView {
     // grid
     ctx.strokeStyle = `rgba(${C.grid},0.18)`; ctx.fillStyle = `rgba(${C.grid},0.6)`; ctx.font = "10px 'B612 Mono', monospace"; ctx.lineWidth = 1;
     for (let el = 0; el <= 90; el += 15) { const y = pad.t + (1 - el / 90) * H; ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + W, y); ctx.stroke(); ctx.fillText(el + "°", 4, y + 3); }
-    const step = (a1 - a0) > 180 ? 45 : 10;
+    const step = [5, 10, 15, 30, 45, 90].find(st => W * st / (a1 - a0) >= 34) || 90; // labels never collide
     for (let a = Math.ceil(a0 / step) * step; a <= a1; a += step) { const x = pad.l + ((a - a0) / (a1 - a0)) * W; ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, pad.t + H); ctx.stroke(); ctx.fillText(String(norm360(a)).padStart(3, "0"), x - 10, h - 8); }
     // points
     ctx.font = "11px 'B612 Mono', monospace";
@@ -240,6 +249,26 @@ export class SkyView {
         if (!labels.some(q => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0)) { labels.push(r); ctx.fillText(p.label, x + 6, y - 4); }
       }
       if (p.id === this.lockId) { ctx.strokeStyle = `rgb(${C.flash})`; ctx.lineWidth = 1.5; ctx.strokeRect(x - 9, y - 9, 18, 18); ctx.lineWidth = 1; }
+    }
+    // trace in progress: numbered corners, edges in order, dashed closing edge
+    if (this.trace) {
+      const t = this.trace;
+      if (t.length) {
+        ctx.strokeStyle = `rgba(${C.flash},0.85)`; ctx.lineWidth = 1.5;
+        ctx.beginPath(); t.forEach((p, i) => { const [x, y] = this._xy(p.az, p.el, w, h); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
+        if (t.length >= 3) {
+          const [x0, y0] = this._xy(t[0].az, t[0].el, w, h), [x1, y1] = this._xy(t[t.length - 1].az, t[t.length - 1].el, w, h);
+          ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x0, y0); ctx.stroke(); ctx.setLineDash([]);
+        }
+        ctx.font = "11px 'B612 Mono', monospace"; ctx.fillStyle = `rgb(${C.flash})`;
+        t.forEach((p, i) => { const [x, y] = this._xy(p.az, p.el, w, h); ctx.fillRect(x - 3, y - 3, 6, 6); ctx.fillText(String(i + 1), x + 6, y - 6); });
+        ctx.lineWidth = 1;
+      }
+      // live line from the last corner to where you're aiming
+      if (this.reticle && t.length) {
+        const [x0, y0] = this._xy(t[t.length - 1].az, t[t.length - 1].el, w, h), [x1, y1] = this._xy(this.reticle.az, this.reticle.el, w, h);
+        ctx.strokeStyle = `rgba(${C.flash},0.35)`; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); ctx.setLineDash([]);
+      }
     }
     // aim reticle (live pointing) and locked aim
     for (const [r, live] of [[this.reticle, true], [this.aim, false]]) {
