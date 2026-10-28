@@ -2,7 +2,7 @@
 // Authentic touches: blips repaint only when the sweep passes them (one rotation = 4.8 s),
 // a blue-white flash on paint that decays to a slow yellow-green afterglow,
 // ARTS-style data blocks (callsign / altitude in hundreds + trend / ground speed).
-import { norm360, dAz, skylineAt } from "./geo.js?v=12";
+import { norm360, dAz, skylineAt } from "./geo.js?v=13";
 
 const C = {
   glass: "#0b130e", phosphor: "185,220,74", flash: "217,236,255", grid: "185,220,74",
@@ -132,7 +132,7 @@ export class Radar {
       !placed.some(q => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0);
     for (const b of blocks) {
       const { it, x, y } = b;
-      const l2 = `${it.altH}${it.trend} ${it.gs}`;
+      const l2 = `${it.altH}  ${it.gs}`;
       const wTxt = Math.max(ctx.measureText(it.label).width, ctx.measureText(l2).width);
       let spot = null;
       for (const [sx, sy] of [[1, -1], [-1, -1], [1, 1], [-1, 1]]) {
@@ -146,9 +146,15 @@ export class Radar {
       ctx.strokeStyle = `rgba(${C.phosphor},${0.45 * dim})`; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x + spot.sx * 3, y + spot.sy * 3); ctx.lineTo(x + spot.sx * 11, y + spot.sy * 8); ctx.stroke();
       ctx.fillStyle = `rgba(${C.phosphor},${it.hidden ? 0.42 : 0.92})`;
-      ctx.textAlign = spot.sx > 0 ? "left" : "right";
-      ctx.fillText(it.label, spot.tx, spot.ty);
-      ctx.fillText(l2, spot.tx, spot.ty + 13);
+      // B612 Mono has no ↑/↓ glyphs, so the trend arrow is drawn as a small triangle in a 1-char gap
+      const x0 = spot.sx > 0 ? spot.tx : spot.tx - wTxt;
+      ctx.textAlign = "left";
+      ctx.fillText(it.label, x0, spot.ty);
+      ctx.fillText(it.altH, x0, spot.ty + 13);
+      const cw = ctx.measureText("0").width, ax = x0 + cw * 3 + cw / 2, ay = spot.ty + 9;
+      if (it.trend === "↑") { ctx.beginPath(); ctx.moveTo(ax, ay - 5); ctx.lineTo(ax + 3.5, ay + 1); ctx.lineTo(ax - 3.5, ay + 1); ctx.fill(); }
+      else if (it.trend === "↓") { ctx.beginPath(); ctx.moveTo(ax, ay + 2); ctx.lineTo(ax + 3.5, ay - 4); ctx.lineTo(ax - 3.5, ay - 4); ctx.fill(); }
+      ctx.fillText(it.gs, x0 + cw * 5, spot.ty + 13);
       if (b.id === this.lockId) this._brackets(ctx, x, y, now);
     }
     ctx.textAlign = "left";

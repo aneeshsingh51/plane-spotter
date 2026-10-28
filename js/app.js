@@ -1,13 +1,13 @@
 // app.js — wiring: state, flow, rendering. Geometry lives in geo.js, ranking in score.js.
-import { haversine, bearing, lookAngles, selfTest, norm360, dAz, MI, FT } from "./geo.js?v=12";
-import { store, fetchPositions, normalizeResponse, lookupRoute, lookupAircraft, lookupPhoto, lookupElevation, fetchMetar, linkState, failing, pruneCache, WORKER } from "./data.js?v=12";
-import { rank, incoming, skyState, airportContext, badges, observerHeights } from "./score.js?v=12";
-import { Compass, getGPS, steadyDetector } from "./sensors.js?v=12";
-import { Radar, SkyView } from "./radar.js?v=12";
-import { TYPES, AIRLINES, airportLabel, PILOT_JOKES, WILLIS } from "./tables.js?v=12";
+import { haversine, bearing, lookAngles, selfTest, norm360, dAz, MI, FT } from "./geo.js?v=13";
+import { store, fetchPositions, normalizeResponse, lookupRoute, lookupAircraft, lookupPhoto, lookupElevation, fetchMetar, linkState, failing, pruneCache, WORKER } from "./data.js?v=13";
+import { rank, incoming, skyState, airportContext, badges, observerHeights, routeFits } from "./score.js?v=13";
+import { Compass, getGPS, steadyDetector } from "./sensors.js?v=13";
+import { Radar, SkyView } from "./radar.js?v=13";
+import { TYPES, AIRLINES, airportLabel, PILOT_JOKES, WILLIS } from "./tables.js?v=13";
 
 // ---------------------------------------------------------------- constants
-const VERSION = 12;
+const VERSION = 13;
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has("debug");
 const CHICAGO = { lat: 41.90, lon: -87.63, groundM: 181 };
@@ -19,6 +19,8 @@ const DEFAULTS = {
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (n, d = 0) => Number.isFinite(n) ? n.toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d }) : "—";
+/** Number for a monospace readout: tightened separators (HTML). */
+const fmtM = (n, d = 0) => esc(fmt(n, d)).replace(/[.,]/g, c => `<span class="pt">${c}</span>`);
 const pad3 = n => String(Math.max(0, Math.round(n))).padStart(3, "0");
 
 if (params.get("frame") === "phone") document.documentElement.classList.add("phone");
@@ -192,7 +194,8 @@ function airlineName(a, d) {
 }
 function typeName(a, d) {
   const t = a.type || d?.ac?.icaoType;
-  const friendly = (t && TYPES[t]?.[0]) || a.desc || (d?.ac ? [d.ac.maker, d.ac.type].filter(Boolean).join(" ") : null);
+  let friendly = (t && TYPES[t]?.[0]) || a.desc || (d?.ac ? [d.ac.maker, d.ac.type].filter(Boolean).join(" ") : null);
+  if (friendly && t && friendly.trim().toUpperCase() === t.toUpperCase()) friendly = null;
   return { code: t, friendly };
 }
 function apText(p) {
@@ -215,13 +218,14 @@ function renderResults(arrive) {
   const reg = a.reg || d.ac?.reg;
   const route = d.route;
   const isTop = top === r.ranked[0];
-  const ctx = airportContext(a, s, route);
+  const ctx = airportContext(a, s, routeFits(route, s.lat, s.lon) === false ? null : route);
   const tags = badges(a, d.ac, new Set(S.log.map(e => e.type)));
   const photo = d.photo?.src ? `<figure class="photo"><a href="${esc(d.photo.link)}" target="_blank">
       <img src="${esc(d.photo.src)}" alt="Photo of ${esc(reg || a.hex)}" loading="lazy"></a>
       <figcaption><a href="${esc(d.photo.link)}" target="_blank">Photo © ${esc(d.photo.photographer)} / Planespotters.net</a></figcaption></figure>`
     : d.ac?.photo ? `<figure class="photo"><img src="${esc(d.ac.photo)}" alt="Photo of ${esc(reg || a.hex)}" loading="lazy"><figcaption>Photo: airport-data.com via adsbdb</figcaption></figure>` : "";
-  const routeLine = route?.origin ? `<span>${apText(route.origin)} → ${apText(route.destination)}<em>Scheduled route (may be stale) · ${esc(route.src)}</em></span>`
+  const fits = route?.origin ? routeFits(route, s.lat, s.lon) : null;
+  const routeLine = route?.origin ? `<span>${apText(route.origin)} → ${apText(route.destination)}<em>${fits === false ? "Scheduled route doesn't fit this aircraft's position: likely stale" : "Scheduled route (may be stale)"} · ${esc(route.src)}</em></span>`
     : !a.flight ? `<span class="missing">No callsign broadcast, so no route lookup.</span>`
     : d.err?.route ? `<span class="missing">Route sources down (adsbdb, hexdb). Try again later.</span>`
     : route === null ? `<span class="missing">Route not in adsbdb or hexdb.</span>` : `<span class="missing">Looking up route…</span>`;
@@ -241,10 +245,10 @@ function renderResults(arrive) {
       <div><small>Route</small>${routeLine}</div>
     </div>
     <div class="grid">
-      <div><small>Alt</small><b>${fmt(altShown)}<i>ft</i></b></div>
-      <div><small>Speed</small><b>${fmt(a.gs)}<i>kt</i></b></div>
-      <div><small>Dist</small><b>${fmt(s.slant / MI, 1)}<i>mi</i></b></div>
-      <div><small>Elev</small><b>${fmt(s.el)}<i>°</i></b></div>
+      <div><small>Alt</small><b>${fmtM(altShown)}<i>ft</i></b></div>
+      <div><small>Speed</small><b>${fmtM(a.gs)}<i>kt</i></b></div>
+      <div><small>Dist</small><b>${fmtM(s.slant / MI, 1)}<i>mi</i></b></div>
+      <div><small>Elev</small><b>${fmtM(s.el)}<i>°</i></b></div>
     </div>
     <p class="ctx">${esc(trendWord(a.vrate))[0].toUpperCase() + esc(trendWord(a.vrate)).slice(1)}${Number.isFinite(a.vrate) && Math.abs(a.vrate) > 300 ? ` at ${fmt(Math.abs(a.vrate))} ft/min` : ""}, moving ${top.motion.dAz < -0.3 ? "left" : top.motion.dAz > 0.3 ? "right" : "straight at or away from you"}, ${top.motion.rangeRate < -20 ? "coming toward you" : top.motion.rangeRate > 20 ? "going away" : "holding distance"}. Bearing ${pad3(s.az)}°${s.state === "marginal" ? ", may be hidden by the skyline" : ""}.</p>
     ${ctx ? `<p class="ctx">${esc(ctx.text)}.</p>` : ""}
@@ -262,7 +266,7 @@ function renderResults(arrive) {
 function strip(c, best) {
   const a = c.a, rel = best ? c.score / best.score : 0;
   return `<button class="strip" data-hex="${esc(a.hex)}"><span class="s1"><b>${esc((a.flight || a.reg || a.hex).toUpperCase())}</b><i>${esc(a.type || "type ?")}</i></span>
-    <span>${fmt(a.baro ?? a.geom)} ft · ${fmt(c.s.slant / MI, 1)} mi</span><span class="sc">${rel.toFixed(2)}</span></button>`;
+    <span>${fmtM(a.baro ?? a.geom)} ft · ${fmtM(c.s.slant / MI, 1)} mi</span><span class="sc">${fmtM(rel, 2)}</span></button>`;
 }
 function renderEmpty(r) {
   const hidden = r.all.filter(c => c.s.state === "hidden" && c.s.el > -5).sort((x, y) => y.s.margin - x.s.margin)[0];
@@ -290,7 +294,7 @@ function lampStates() {
   const head = compass.az !== null ? `heading ${fmt(compass.az, 1)}° true (declination ${fmt(S.settings.declination, 1)}°, offset ${S.settings.headingOffset >= 0 ? "+" : ""}${fmt(S.settings.headingOffset, 1)}°)` : "";
   const cmp = c === "live" ? ["green", `Compass live, ${head}.${compass.kind === "sim" ? " Simulated." : ""}`]
     : c === "unsupported" ? ["red", "No compass on this device. In Aim mode, tap the sky view where you see the plane."]
-    : c === "denied" ? ["red", "Compass permission was denied. Reload the page, tap Aim, then allow Motion & Orientation."]
+    : c === "denied" ? ["red", "Compass permission was denied. Reload the page, tap Aim, then allow Motion & Orientation. Until then, tap the sky view where you see the plane."]
     : c === "waiting" ? ["amber", "Waiting for compass data. Move the phone in a figure 8 if it stays amber."]
     : ["amber", compass.needsPermission ? "Compass is off. Tap Aim, then Turn on compass." : "Compass is off. Tap Aim to start it."];
   const age = S.snap ? (Date.now() - S.snap.receivedAt) / 1000 : null;
@@ -389,8 +393,8 @@ let lastLock = 0;
 compass.on(() => {
   renderLamps();
   if (S.aimMode && compass.state === "live") {
-    $("#aimAz").textContent = fmt(compass.az, 1).padStart(5, "0");
-    $("#aimEl").textContent = fmt(compass.el, 1);
+    $("#aimAz").innerHTML = fmtM(compass.az, 1);
+    $("#aimEl").innerHTML = fmtM(compass.el, 1);
     const st = steady(compass.az, compass.el);
     $("#aimSteady").textContent = st ? "YES" : "…";
     radar.aimAz = compass.az;
@@ -514,7 +518,7 @@ function openSettings(focus) {
   const w = st.home ? lookAngles(st.home.lat, st.home.lon, st.home.groundM + st.eyeM, WILLIS.lat, WILLIS.lon, WILLIS.topM) : null;
   body.innerHTML = `
   <fieldset id="fsLoc"><legend class="placard">Location</legend>
-    <p>Now: <span class="val">${fmt(S.obs.lat, 4)}, ${fmt(S.obs.lon, 4)}</span> (${esc(S.locSource)}), ground ${fmt(S.obs.groundM)} m.</p>
+    <p>Now: <span class="val">${fmtM(S.obs.lat, 4)}, ${fmtM(S.obs.lon, 4)}</span> (${esc(S.locSource)}), ground ${fmt(S.obs.groundM)} m.</p>
     <div class="pair"><input type="number" step="0.0001" id="inLat" placeholder="Latitude" aria-label="Latitude"><input type="number" step="0.0001" id="inLon" placeholder="Longitude" aria-label="Longitude"></div>
     <div class="btns"><button class="key small" id="btnSetLoc">Set as home</button><button class="key small" id="btnGps">Use GPS as home</button><button class="key small" id="btnChi">Use Chicago</button></div>
   </fieldset>

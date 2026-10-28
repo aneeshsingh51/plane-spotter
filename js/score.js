@@ -1,6 +1,6 @@
 // score.js — project aircraft to the tap moment, compute sky geometry, rank, explain.
-import { lookAngles, deadReckon, visibility, angSep, dAz, haversine, bearing, FT, MI } from "./geo.js?v=12";
-import { TYPES, DEFAULT_SPAN, AIRPORTS, WIDEBODY, BIZJET, CARGO_ICAO } from "./tables.js?v=12";
+import { lookAngles, deadReckon, visibility, angSep, dAz, haversine, bearing, FT, MI } from "./geo.js?v=13";
+import { TYPES, DEFAULT_SPAN, AIRPORTS, WIDEBODY, BIZJET, CARGO_ICAO } from "./tables.js?v=13";
 
 const SOUND = 343; // m/s
 
@@ -72,6 +72,19 @@ export function airportContext(a, s, route) {
     }
   }
   return null;
+}
+
+/**
+ * Does the scheduled route fit where the aircraft actually is?
+ * Detour test: origin→aircraft→destination may be at most 25% (+100 km) longer than origin→destination.
+ * Returns true / false, or null when airport coordinates are unknown.
+ */
+export function routeFits(route, lat, lon) {
+  const o = route?.origin, d = route?.destination;
+  if (!o || !d || !Number.isFinite(o.lat) || !Number.isFinite(d.lat)) return null;
+  const direct = haversine(o.lat, o.lon, d.lat, d.lon);
+  const via = haversine(o.lat, o.lon, lat, lon) + haversine(lat, lon, d.lat, d.lon);
+  return via <= direct * 1.25 + 100000;
 }
 
 export function badges(a, details, seenTypes) {

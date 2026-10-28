@@ -24,7 +24,9 @@ export const TYPES = {
   GL7T: ["Bombardier Global 7500", 31.7], GLF5: ["Gulfstream G550", 28.5], GLF6: ["Gulfstream G650", 30.4], G650: ["Gulfstream G650", 30.4],
   H25B: ["Hawker 800", 15.7], LJ45: ["Learjet 45", 14.6], F2TH: ["Dassault Falcon 2000", 21.4],
   EC35: ["Airbus H135 (helicopter)", 10.2], EC45: ["Airbus H145 (helicopter)", 11.0], A139: ["Leonardo AW139 (helicopter)", 13.8],
-  B407: ["Bell 407 (helicopter)", 10.7], B06: ["Bell 206 (helicopter)", 10.2], S76: ["Sikorsky S-76 (helicopter)", 13.4],
+  B407: ["Bell 407 (helicopter)", 10.7], B429: ["Bell 429 (helicopter)", 11.0], B505: ["Bell 505 (helicopter)", 11.0],
+  R44: ["Robinson R44 (helicopter)", 10.1], R66: ["Robinson R66 (helicopter)", 10.1], H500: ["MD 500 (helicopter)", 8.1],
+  AS50: ["Airbus H125 (helicopter)", 10.7], EC30: ["Airbus H130 (helicopter)", 10.7], B06: ["Bell 206 (helicopter)", 10.2], S76: ["Sikorsky S-76 (helicopter)", 13.4],
   C17: ["Boeing C-17 Globemaster", 51.8], C130: ["Lockheed C-130 Hercules", 40.4], K35R: ["Boeing KC-135", 39.9],
 };
 export const DEFAULT_SPAN = 35;

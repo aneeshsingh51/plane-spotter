@@ -1,5 +1,5 @@
 // sensors.js — GPS and compass. Emits plain numbers; no geometry decisions here.
-import { pointingFromOrientation, circularLowPass, norm360, dAz } from "./geo.js?v=12";
+import { pointingFromOrientation, circularLowPass, norm360, dAz } from "./geo.js?v=13";
 
 // ---------------- GPS ----------------
 export function getGPS(timeout = 5000) {
