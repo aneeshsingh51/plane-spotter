@@ -1,13 +1,13 @@
 // app.js — wiring: state, flow, rendering. Geometry lives in geo.js, ranking in score.js.
-import { haversine, bearing, lookAngles, selfTest, norm360, dAz, MI, FT } from "./geo.js?v=14";
-import { store, fetchPositions, normalizeResponse, lookupRoute, lookupAircraft, lookupPhoto, lookupElevation, fetchMetar, linkState, failing, pruneCache, WORKER } from "./data.js?v=14";
-import { rank, incoming, skyState, airportContext, badges, observerHeights, routeFits } from "./score.js?v=14";
-import { Compass, getGPS, steadyDetector } from "./sensors.js?v=14";
-import { Radar, SkyView } from "./radar.js?v=14";
-import { TYPES, AIRLINES, airportLabel, PILOT_JOKES, WILLIS } from "./tables.js?v=14";
+import { haversine, bearing, lookAngles, selfTest, norm360, dAz, MI, FT } from "./geo.js?v=15";
+import { store, fetchPositions, normalizeResponse, lookupRoute, lookupAircraft, lookupPhoto, lookupElevation, fetchMetar, linkState, failing, pruneCache, WORKER } from "./data.js?v=15";
+import { rank, incoming, skyState, airportContext, badges, observerHeights, routeFits } from "./score.js?v=15";
+import { Compass, getGPS, steadyDetector, platform } from "./sensors.js?v=15";
+import { Radar, SkyView } from "./radar.js?v=15";
+import { TYPES, AIRLINES, airportLabel, PILOT_JOKES, WILLIS } from "./tables.js?v=15";
 
 // ---------------------------------------------------------------- constants
-const VERSION = 14;
+const VERSION = 15;
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has("debug");
 const CHICAGO = { lat: 41.90, lon: -87.63, groundM: 181 };
@@ -291,13 +291,8 @@ function lampStates() {
     : S.locSource === "home" ? ["amber", S.gps.state === "pending" ? "Using saved home while GPS gets a fix." : "Using your saved home. GPS gave no fix; that is fine indoors."]
     : S.locSource === "manual" ? ["amber", "Using the location you entered."]
     : ["amber", "Using default location (central Chicago). Allow location or set your home in Settings."];
-  const c = compass.state;
-  const head = compass.az !== null ? `heading ${fmt(compass.az, 1)}° true (declination ${fmt(S.settings.declination, 1)}°, offset ${S.settings.headingOffset >= 0 ? "+" : ""}${fmt(S.settings.headingOffset, 1)}°)` : "";
-  const cmp = c === "live" ? ["green", `Compass live, ${head}.${compass.kind === "sim" ? " Simulated." : ""}`]
-    : c === "unsupported" ? ["red", "No compass on this device. In Aim mode, tap the sky view where you see the plane."]
-    : c === "denied" ? ["red", "Compass permission was denied. Reload the page, tap Aim, then allow Motion & Orientation. Until then, tap the sky view where you see the plane."]
-    : c === "waiting" ? ["amber", "Waiting for compass data. Move the phone in a figure 8 if it stays amber."]
-    : ["amber", compass.needsPermission ? "Compass is off. Tap Aim, then Turn on compass." : "Compass is off. Tap Aim to start it."];
+  const cc = compassCopy();
+  const cmp = [cc.lamp, cc.long];
   const age = S.snap ? (Date.now() - S.snap.receivedAt) / 1000 : null;
   const lnk = S.demo ? ["amber", "Demo mode: a recorded response, not live data."]
     : S.error ? ["red", errorText(S.error)]
@@ -311,17 +306,70 @@ function errorText(e) {
   if (e.kind === "down") return "Positions are missing: adsb.lol and adsb.fi are both down. Nothing to fix on your side; I retry every 10 s.";
   return "Can't reach the position proxy. Check Wi-Fi or mobile data; I retry every 10 s.";
 }
+// ---------------------------------------------------------------- compass copy
+// Every compass state has: a lamp colour, a short tray line, a long explanation, and fix steps.
+const PLAT = platform();
+function compassCopy() {
+  const c = compass.state, P = PLAT;
+  const app = P.standalone ? "the Spotter app" : P.browser;
+  const canTry = compass.supported && c !== "live" && c !== "unsupported";
+  const base = { canTry, fix: "" };
+  if (c === "live") {
+    const head = `${fmt(compass.az, 1)}° true (declination ${fmt(S.settings.declination, 1)}°, offset ${S.settings.headingOffset >= 0 ? "+" : ""}${fmt(S.settings.headingOffset, 1)}°)`;
+    return { ...base, lamp: "green", short: "", long: `Compass on. Heading ${head}.${compass.kind === "sim" ? " Simulated." : ""}` };
+  }
+  if (c === "asking") return { ...base, lamp: "amber", short: "Tap Allow on the prompt.", long: "Waiting for you to answer the motion prompt. Tap Allow." };
+  if (c === "waiting") return { ...base, lamp: "amber", short: "Starting compass…", long: "Compass is starting. If it takes more than a few seconds, wave the phone in a figure 8." };
+  if (c === "denied") {
+    const steps = P.ios ? [
+      "Tap <b>Turn on compass</b> again and choose <b>Allow</b>.",
+      `No prompt? Close ${esc(app)} fully (swipe it up in the app switcher), open this page again and retry.`,
+      "Still blocked? Settings → Apps → Safari → Advanced → Website Data → delete <b>github.io</b>. Then open your setup link again.",
+    ] : ["Tap <b>Turn on compass</b> again and allow motion sensors.", `If no prompt shows, allow <b>Motion sensors</b> for this site in ${esc(app)}'s site settings.`];
+    return { ...base, lamp: "red", short: "Motion access is blocked. See the fix below the scope.",
+      long: "Motion access is blocked for this site, so the compass can't start.",
+      fix: `<b>Motion access is blocked.</b><ol>${steps.map(x => `<li>${x}</li>`).join("")}</ol>Until then, tap the sky view where you see the plane.` };
+  }
+  if (c === "no-heading") {
+    const fix = P.android ? `${esc(P.browser)} sends tilt but no compass heading. Open this page in <b>Chrome</b>.`
+      : P.ios ? "Your iPhone sent tilt but no compass heading. Check that Location Services is on (Settings → Privacy &amp; Security), then close and reopen the page."
+      : "This browser sends tilt but no compass heading.";
+    return { ...base, canTry: false, lamp: "red", short: "No compass heading in this browser.", long: fix.replace(/<[^>]+>/g, ""), fix: fix + " Meanwhile, tap the sky view where you see the plane." };
+  }
+  if (c === "unsupported") {
+    const t = P.mobile ? "This browser gives no motion data." : "No compass on this device (desktop).";
+    return { ...base, lamp: "red", short: t + " Tap the sky where you see the plane.", long: t + " In Aim mode, tap the sky view where you see the plane.", fix: t + " Tap the sky view where you see the plane." };
+  }
+  return { ...base, lamp: "amber", short: "Compass is off.",
+    long: P.ios ? "Compass is off. Tap Turn on compass, then Allow on the iPhone prompt." : "Compass is off. Tap Turn on compass." };
+}
+
 let lampOpen = null;
+function lampMsg(k) {
+  const L = lampStates(), m = $("#lampMsg");
+  m.className = "msg" + (L[k][0] === "red" ? " red" : "");
+  let html = esc(L[k][1]);
+  if (k === "cmp") {
+    const cc = compassCopy();
+    if (cc.fix) html = cc.fix;
+    if (cc.canTry && !S.aimMode) html += `<div class="acts"><button class="key small lit" data-cmp-go>Turn on compass</button></div>`;
+    if (DEBUG) html += `<div class="diag">perm ${esc(compass.diag.perm)} · events ${compass.diag.events} · heading ${compass.diag.withHeading} · absolute ${compass.diag.absolute} · empty ${compass.diag.empty} · ${esc(PLAT.browser)}${PLAT.standalone ? " (home screen)" : ""}</div>`;
+  }
+  if (m.dataset.html !== html) {
+    m.innerHTML = html; m.dataset.html = html;
+    m.querySelector("[data-cmp-go]")?.addEventListener("click", () => { compass.start(); setAimMode(true); });
+  }
+}
 function renderLamps() {
   const L = lampStates();
   for (const [id, k] of [["#lampGps", "gps"], ["#lampCmp", "cmp"], ["#lampLnk", "lnk"]]) $(id).dataset.s = L[k][0];
-  if (lampOpen) $("#lampMsg").textContent = L[lampOpen][1];
+  if (lampOpen) lampMsg(lampOpen);
 }
 for (const [id, k] of [["#lampGps", "gps"], ["#lampCmp", "cmp"], ["#lampLnk", "lnk"]]) {
   $(id).onclick = () => {
     const m = $("#lampMsg");
     if (lampOpen === k) { lampOpen = null; m.hidden = true; return; }
-    lampOpen = k; m.hidden = false; m.className = "msg" + ($(id).dataset.s === "red" ? " red" : ""); m.textContent = lampStates()[k][1];
+    lampOpen = k; m.hidden = false; m.dataset.html = ""; lampMsg(k);
   };
 }
 let alertTimer = null;
@@ -393,40 +441,59 @@ function nightCheck() {
 const steady = steadyDetector(1, 800);
 let lastLock = 0;
 compass.on(() => {
+  if (compass.state === "live" && lampOpen === "cmp" && $("#lampMsg").classList.contains("red")) { lampOpen = null; $("#lampMsg").hidden = true; }
   renderLamps();
+  renderTray();
   if (S.aimMode && compass.state === "live") {
-    $("#aimAz").innerHTML = fmtM(compass.az, 1);
-    $("#aimEl").innerHTML = fmtM(compass.el, 1);
     const st = steady(compass.az, compass.el);
-    $("#aimSteady").textContent = st ? "YES" : "…";
+    S.steady = st;
     radar.aimAz = compass.az;
     if (S.view === "sky") drawSky();
     if (st && performance.now() - lastLock > 2500) lockAim(compass.az, compass.el, "steady");
   }
   if (skyTrace.on) skyTrace.samples.push({ az: compass.az, el: compass.el });
-  if (compass.state === "unsupported" && S.aimMode) {
-    $("#aimHint").textContent = "No compass here. Tap the sky view where you see the plane.";
-    setView("sky");
-  }
+  if ((compass.state === "unsupported" || compass.state === "no-heading") && S.aimMode && S.view !== "sky") setView("sky");
 });
-async function setAimMode(on) {
+const HINT_LIVE = "Point the top edge of your phone at the plane and hold still. It locks by itself, or press Lock.";
+/**
+ * Aim mode turns the thumb tray into the compass control:
+ * one line of status above one big button (Turn on compass → Lock).
+ */
+function renderTray() {
+  const line = $("#trayLine"), chips = $("#chips"), btn = $("#btnSee");
+  line.hidden = !S.aimMode; chips.hidden = S.aimMode;
+  let label = "I see a plane", text = "";
+  if (S.aimMode) {
+    const c = compass.state, cc = compassCopy();
+    if (c === "live") { label = "Lock"; text = `<b>${fmtM(compass.az, 1)}°</b> az <b>${fmtM(compass.el, 1)}°</b> el · ${S.steady ? "Locking…" : "Hold still to lock"}`; }
+    else if (c === "asking" || c === "waiting") { label = "Starting compass…"; text = esc(cc.short); }
+    else if (c === "unsupported" || c === "no-heading" || c === "denied") {
+      label = c === "denied" ? "Turn on compass" : "Exit aim";
+      text = esc(cc.short.replace(" See the fix below the scope.", "")) + " Steps are at the top.";
+      if (lampOpen !== "cmp") { lampOpen = "cmp"; $("#lampMsg").hidden = false; $("#lampMsg").dataset.html = ""; lampMsg("cmp"); window.scrollTo({ top: 0 }); }
+    }
+    else { label = "Turn on compass"; text = esc(cc.short); }
+    const hint = c === "live" ? HINT_LIVE : (cc.fix || cc.long);
+    if ($("#aimHint").dataset.html !== hint) { $("#aimHint").innerHTML = hint; $("#aimHint").dataset.html = hint; }
+  }
+  if (btn.textContent !== label) btn.textContent = label;
+  if (line.dataset.html !== text) { line.innerHTML = text; line.dataset.html = text; }
+}
+function setAimMode(on) {
   S.aimMode = on;
   $("#btnAim").setAttribute("aria-pressed", on);
   $("#aimPanel").hidden = !on;
-  if (!on) { stopCamera(); return; }
-  setView("sky");
-  if (compass.state === "live") return;
-  if (compass.needsPermission && compass.state !== "denied") { $("#btnCompass").hidden = false; $("#aimHint").textContent = "Tap Turn on compass, then point the top edge of your phone at the plane."; }
-  else await compass.start();
+  if (!on) stopCamera(); else setView("sky");
+  renderTray();
 }
-$("#btnAim").onclick = () => setAimMode(!S.aimMode);
+// One tap: AIM itself asks for motion permission (iPhone needs the tap), then shows the reticle.
+$("#btnAim").onclick = () => {
+  const on = !S.aimMode;
+  if (on && compass.state !== "live") compass.start();
+  setAimMode(on);
+};
 $("#vScope").onclick = () => setView("scope");
 $("#vSky").onclick = () => setView("sky");
-$("#btnCompass").onclick = async () => { const ok = await compass.start(); $("#btnCompass").hidden = ok; renderLamps(); };
-$("#btnLock").onclick = () => {
-  if (compass.state === "live") lockAim(compass.az, compass.el, "button");
-  else $("#aimHint").textContent = "No compass reading yet. Tap the sky view where you see the plane.";
-};
 $("#btnAimOff").onclick = () => { S.aim = null; radar.aimAz = null; if (S.result) runMatch({ quiet: true }); setAimMode(false); };
 function lockAim(az, el, how) {
   lastLock = performance.now();
@@ -443,7 +510,7 @@ $("#btnCam").onclick = async () => {
     camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
     const v = $("#video"); v.srcObject = camStream; await v.play();
     $("#vf").hidden = false; compass.axis = "camera"; $("#btnCam").setAttribute("aria-pressed", "true");
-    $("#aimHint").textContent = "Center the plane in the circle and hold still.";
+    $("#aimHint").textContent = "Center the plane in the circle and hold still."; $("#aimHint").dataset.html = "";
   } catch { $("#aimHint").textContent = "Camera not available. Use the top edge of the phone instead."; }
 };
 function stopCamera() {
@@ -468,8 +535,14 @@ function feedback() {
 
 // ---------------------------------------------------------------- main button
 $("#btnSee").onclick = async () => {
+  if (S.aimMode) {
+    const c = compass.state;
+    if (c === "live") return lockAim(compass.az, compass.el, "button");
+    if (c === "unsupported" || c === "no-heading") return setAimMode(false);
+    if (c !== "asking" && c !== "waiting") compass.start(); // called straight from the tap: iPhone shows its prompt
+    return;
+  }
   S.jokeI++;
-  if (S.aimMode && compass.state === "live") return lockAim(compass.az, compass.el, "button");
   await runMatch();
   refresh("after-tap");
 };
@@ -646,7 +719,7 @@ function renderDebug() {
       <label class="row">Heading <span class="val" id="simHV">${fmt(compass.az ?? 195)}°</span></label><input type="range" min="0" max="359" value="${Math.round(compass.az ?? 195)}" id="simH">
       <label class="row">Tilt <span class="val" id="simTV">${fmt(compass.el ?? 40)}°</span></label><input type="range" min="0" max="90" value="${Math.round(compass.el ?? 40)}" id="simT">
     </fieldset>
-    <p class="note" id="dbgInfo">Observer ${fmt(S.obs.lat, 4)}, ${fmt(S.obs.lon, 4)} · MSL ${fmt(observerHeights(S.obs).msl)} m · ellipsoid ${fmt(observerHeights(S.obs).ellip)} m · ${S.snap ? S.snap.ac.length : 0} aircraft · latency ${S.snap ? fmt(S.snap.latencyMs) : "—"} ms · ranked ${fmt(S.rankMs, 1)} ms</p>`;
+    <p class="note" id="dbgInfo">Observer ${fmt(S.obs.lat, 4)}, ${fmt(S.obs.lon, 4)} · MSL ${fmt(observerHeights(S.obs).msl)} m · ellipsoid ${fmt(observerHeights(S.obs).ellip)} m · ${S.snap ? S.snap.ac.length : 0} aircraft · latency ${S.snap ? fmt(S.snap.latencyMs) : "—"} ms · ranked ${fmt(S.rankMs, 1)} ms · compass ${esc(compass.state)} (perm ${esc(compass.diag.perm)}, events ${compass.diag.events}, heading ${compass.diag.withHeading}, absolute ${compass.diag.absolute})</p>`;
   const sim = () => { compass.simulate(+$("#simH").value, +$("#simT").value); $("#simHV").textContent = $("#simH").value + "°"; $("#simTV").textContent = $("#simT").value + "°"; };
   $("#simH").oninput = sim; $("#simT").oninput = sim;
   window.__selfTest = t;
@@ -664,7 +737,7 @@ async function boot() {
   if (params.has("demo")) {
     try { S.demo = await (await fetch(`demo.json?v=${VERSION}`)).json(); setObserver(41.90, -87.63, 181, "url"); } catch {}
   }
-  renderBanner(); renderLamps(); renderFooter(); setView("scope"); syncChips();
+  renderBanner(); renderLamps(); renderFooter(); setView("scope"); syncChips(); renderTray();
   if (fromLink !== null) {
     $("#alert").hidden = false;
     $("#alert").innerHTML = fromLink ? `<div class="msg">Setup saved: home, height and window. The link was removed from the address bar.</div>` : `<div class="msg red">That setup link is damaged. Ask for a fresh one or set things up in Settings.</div>`;

@@ -1,6 +1,6 @@
 // score.js — project aircraft to the tap moment, compute sky geometry, rank, explain.
-import { lookAngles, deadReckon, visibility, angSep, dAz, haversine, bearing, FT, MI } from "./geo.js?v=14";
-import { TYPES, DEFAULT_SPAN, AIRPORTS, WIDEBODY, BIZJET, CARGO_ICAO } from "./tables.js?v=14";
+import { lookAngles, deadReckon, visibility, angSep, dAz, haversine, bearing, FT, MI } from "./geo.js?v=15";
+import { TYPES, DEFAULT_SPAN, AIRPORTS, WIDEBODY, BIZJET, CARGO_ICAO } from "./tables.js?v=15";
 
 const SOUND = 343; // m/s
 

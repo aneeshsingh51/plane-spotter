@@ -168,6 +168,13 @@ h2.placard { margin: 22px 0 8px; }
   padding: 18px 0 calc(12px + env(safe-area-inset-bottom));
 }
 .tray-in { max-width: 480px; margin: 0 auto; padding: 0 16px; }
+.tray-line { margin: 0 0 10px; min-height: 48px; display: flex; align-items: center; font-size: 14px; line-height: 1.35; color: #d7dacd; }
+.tray-line b { font: 400 19px/1 var(--mono); color: var(--phosphor); margin-right: 3px; }
+.tray-line b + b, .tray-line b ~ b { margin-left: 8px; }
+.note ol { margin: 6px 0 6px 20px; padding: 0; }
+.note li { margin: 4px 0; }
+.note b { color: #d7dacd; }
+.diag { margin-top: 8px; font: 11px/1.4 var(--mono); color: var(--engrave); }
 .chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 10px; scrollbar-width: none; }
 .chips::-webkit-scrollbar { display: none; }
 .chip {

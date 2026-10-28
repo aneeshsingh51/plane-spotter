@@ -6,9 +6,9 @@
 <title>Plane Spotter</title>
 <meta name="description" content="Tap when you see a plane. Get the flight, type, route and a confidence score.">
 <meta name="theme-color" content="#2a2e28">
-<link rel="manifest" href="manifest.webmanifest?v=14">
-<link rel="icon" href="icons/icon.svg?v=14" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=14">
+<link rel="manifest" href="manifest.webmanifest?v=15">
+<link rel="icon" href="icons/icon.svg?v=15" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=15">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -16,9 +16,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=B612:wght@400;700&family=B612+Mono&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/app.css?v=14">
+<link rel="stylesheet" href="css/app.css?v=15">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.9.0/suncalc.min.js" defer></script>
-<script type="module" src="js/app.js?v=14"></script>
+<script type="module" src="js/app.js?v=15"></script>
 </head>
 <body>
 <div class="app">
@@ -52,15 +52,8 @@
 
   <section class="aim" id="aimPanel" hidden>
     <div class="vf" id="vf" hidden><video id="video" playsinline muted></video></div>
-    <div class="read" aria-live="off">
-      <span><small>AZ</small><b id="aimAz">---.-</b></span>
-      <span><small>EL</small><b id="aimEl">--.-</b></span>
-      <span><small>STEADY</small><b id="aimSteady">--</b></span>
-    </div>
-    <p class="note" id="aimHint">Point the top edge of your phone at the plane and hold still. It locks by itself.</p>
+    <div class="note" id="aimHint">Point the top edge of your phone at the plane and hold still. It locks by itself.</div>
     <div class="row">
-      <button class="key" id="btnCompass" hidden>Turn on compass</button>
-      <button class="key" id="btnLock">Lock</button>
       <button class="key" id="btnCam">Camera</button>
       <button class="key" id="btnAimOff">Clear aim</button>
     </div>
@@ -79,7 +72,8 @@
 
 <div class="tray">
   <div class="tray-in">
-    <div class="chips" role="group" aria-label="What you see">
+    <p class="tray-line" id="trayLine" aria-live="polite" hidden></p>
+    <div class="chips" id="chips" role="group" aria-label="What you see">
       <button class="chip" data-chip="high" aria-pressed="false">High &amp; small</button>
       <button class="chip" data-chip="low" aria-pressed="false">Low &amp; big</button>
       <button class="chip" data-chip="left" aria-pressed="false">Moving left</button>
