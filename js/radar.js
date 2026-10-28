@@ -2,7 +2,7 @@
 // Authentic touches: blips repaint only when the sweep passes them (one rotation = 4.8 s),
 // a blue-white flash on paint that decays to a slow yellow-green afterglow,
 // ARTS-style data blocks (callsign / altitude in hundreds + trend / ground speed).
-import { norm360, dAz, skylineAt } from "./geo.js?v=18";
+import { norm360, dAz, skylineAt } from "./geo.js?v=19";
 
 const C = {
   glass: "#0b130e", phosphor: "185,220,74", flash: "217,236,255", grid: "185,220,74",
@@ -173,14 +173,26 @@ export class Radar {
   }
 }
 
-/** Az/el chart of the window: azimuth left→right, elevation 0→90 bottom→top. */
+/**
+ * Az/el chart of the window: azimuth left→right, elevation bottom→top.
+ * Modes: normal (planes + outline), trace (corners being marked), edit (drag corners of the outline).
+ */
 export class SkyView {
-  constructor(canvas, { onTap } = {}) {
-    this.cv = canvas; this.onTap = onTap; this.points = []; this.mask = null; this.aim = null; this.reticle = null; this.lockId = null;
+  constructor(canvas, { onTap, onEdit } = {}) {
+    this.cv = canvas; this.onTap = onTap; this.onEdit = onEdit;
+    this.points = []; this.mask = null; this.aim = null; this.reticle = null; this.lockId = null;
+    this.trace = null; this.fixedRange = null; this.elRange = null;
+    this.edit = null; // { poly:[{az,el}], sel:index|null, preview:[{az,el}]|null }
+    this._drag = null;
     canvas.addEventListener("click", e => {
+      if (this.edit) return; // edit mode handles its own pointer events
       const r = canvas.getBoundingClientRect(); const p = this._inv(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
       if (p && this.onTap) this.onTap(p);
     });
+    canvas.addEventListener("pointerdown", e => this._down(e));
+    canvas.addEventListener("pointermove", e => this._move(e));
+    canvas.addEventListener("pointerup", e => this._up(e));
+    canvas.addEventListener("pointercancel", e => this._up(e));
   }
   _range() {
     if (this.fixedRange) return this.fixedRange;
@@ -189,27 +201,67 @@ export class SkyView {
     if (!m || (m.azFrom === 0 && m.azTo === 360)) { const c = this.facing ?? 180; return [c - 180, c + 180]; }
     const span = norm360(m.azTo - m.azFrom) || 360; return [m.azFrom - 12, m.azFrom + span + 12];
   }
+  _els() { return this.elRange || [0, 90]; }
   _geom(w, h) { const pad = { l: 34, r: 10, t: 12, b: 24 }; return { pad, W: w - pad.l - pad.r, H: h - pad.t - pad.b }; }
+  _y(el, h) { const [e0, e1] = this._els(), { pad, H } = this._geom(1, h); return pad.t + (1 - (el - e0) / (e1 - e0)) * H; }
   _xy(az, el, w, h) {
-    const [a0, a1] = this._range(), { pad, W, H } = this._geom(w, h);
-    const d = norm360(az - a0); const x = pad.l + (d / (a1 - a0)) * W; const y = pad.t + (1 - el / 90) * H; return [x, y, d <= a1 - a0];
+    const [a0, a1] = this._range(), { pad, W } = this._geom(w, h);
+    const d = norm360(az - a0); const x = pad.l + (d / (a1 - a0)) * W; return [x, this._y(el, h), d <= a1 - a0];
   }
-  _inv(x, y, w, h) {
-    const [a0, a1] = this._range(), { pad, W, H } = this._geom(w, h);
-    if (x < pad.l || x > pad.l + W || y < pad.t || y > pad.t + H) return null;
-    return { az: norm360(a0 + ((x - pad.l) / W) * (a1 - a0)), el: 90 * (1 - (y - pad.t) / H) };
+  _inv(x, y, w, h, clamp = false) {
+    const [a0, a1] = this._range(), [e0, e1] = this._els(), { pad, W, H } = this._geom(w, h);
+    if (clamp) { x = Math.max(pad.l, Math.min(pad.l + W, x)); y = Math.max(pad.t, Math.min(pad.t + H, y)); }
+    else if (x < pad.l || x > pad.l + W || y < pad.t || y > pad.t + H) return null;
+    return { az: norm360(a0 + ((x - pad.l) / W) * (a1 - a0)), el: e0 + (1 - (y - pad.t) / H) * (e1 - e0) };
   }
+
+  // ---- edit mode: drag corners. Touch slop 26 px, so a fingertip can grab a 10 px handle.
+  _local(e) { const r = this.cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height }; }
+  _hit(x, y, w, h) {
+    let best = null;
+    let dmin = 26;
+    this.edit.poly.forEach((p, i) => { const [px, py] = this._xy(p.az, p.el, w, h); const d = Math.hypot(px - x, py - y); if (d < dmin) { dmin = d; best = i; } });
+    return best;
+  }
+  _down(e) {
+    if (!this.edit) return;
+    const { x, y, w, h } = this._local(e);
+    const i = this._hit(x, y, w, h);
+    if (i === null) { this.edit.sel = null; this.onEdit?.("select"); this.draw(); return; }
+    e.preventDefault();
+    this.cv.setPointerCapture(e.pointerId);
+    const p = this.edit.poly[i], [px, py] = this._xy(p.az, p.el, w, h);
+    // keep the grab offset, so the corner doesn't jump under the finger
+    this._drag = { i, id: e.pointerId, dx: px - x, dy: py - y, moved: false };
+    this.edit.sel = i; this.onEdit?.("select"); this.draw();
+  }
+  _move(e) {
+    const d = this._drag; if (!d || e.pointerId !== d.id || !this.edit) return;
+    const { x, y, w, h } = this._local(e);
+    const q = this._inv(x + d.dx, y + d.dy, w, h, true);
+    if (!d.moved) { d.moved = true; this.onEdit?.("drag-start"); }
+    this.edit.poly[d.i] = { az: +q.az.toFixed(1), el: +Math.max(0, Math.min(90, q.el)).toFixed(1) };
+    this.onEdit?.("drag"); this.draw();
+  }
+  _up(e) {
+    const d = this._drag; if (!d || e.pointerId !== d.id) return;
+    this._drag = null; if (d.moved) this.onEdit?.("drag-end");
+  }
+
   draw() {
     const { ctx, w, h } = setupCanvas(this.cv);
-    const [a0, a1] = this._range(), { pad, W, H } = this._geom(w, h);
+    const [a0, a1] = this._range(), [e0, e1] = this._els(), { pad, W, H } = this._geom(w, h);
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = C.glass; ctx.fillRect(0, 0, w, h);
-    // shaded: skyline (below mask), window top, outside window
     const m = this.mask;
     ctx.fillStyle = "rgba(42,46,40,0.92)";
     const polyPath = poly => { ctx.beginPath(); poly.forEach((p, i) => { const [x, y] = this._xy(p.az, p.el, w, h); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.closePath(); };
-    if (m && m.frame && !this.trace) {
-      // traced outline: everything is wall except the outline you marked
+    ctx.save(); ctx.beginPath(); ctx.rect(pad.l, pad.t, W, H); ctx.clip();
+    if (this.edit) {
+      // editing: wall everywhere except the outline being edited
+      ctx.fillRect(pad.l, pad.t, W, H);
+      polyPath(this.edit.poly); ctx.fillStyle = C.glass; ctx.fill();
+    } else if (m && m.frame && !this.trace) {
       ctx.fillRect(pad.l, pad.t, W, H);
       polyPath(m.poly); ctx.fillStyle = C.glass; ctx.fill();
       ctx.strokeStyle = `rgba(${C.phosphor},0.55)`; ctx.setLineDash([4, 4]); ctx.stroke(); ctx.setLineDash([]);
@@ -219,36 +271,52 @@ export class SkyView {
         const az = a0 + (i / 120) * (a1 - a0);
         const inWin = m.azFrom === 0 && m.azTo === 360 ? true : norm360(az - m.azFrom) <= (norm360(m.azTo - m.azFrom) || 360);
         const el = inWin ? skylineAt(m.skyline, az) : 90;
-        ctx.lineTo(pad.l + (i / 120) * W, pad.t + (1 - el / 90) * H);
+        ctx.lineTo(pad.l + (i / 120) * W, this._y(el, h));
       }
       ctx.lineTo(pad.l + W, pad.t + H); ctx.closePath(); ctx.fill();
-      if ((m.top ?? 90) < 90) { const yT = pad.t + (1 - m.top / 90) * H; ctx.fillRect(pad.l, pad.t, W, yT - pad.t); }
-      // outline the open sky so the window reads at a glance
+      if ((m.top ?? 90) < 90) { const yT = this._y(m.top, h); ctx.fillRect(pad.l, pad.t, W, yT - pad.t); }
       if (!(m.azFrom === 0 && m.azTo === 360)) {
         const [xa] = this._xy(m.azFrom, 0, w, h), [xb] = this._xy(m.azTo, 0, w, h);
-        const yT = pad.t + (1 - (m.top ?? 90) / 90) * H, yB = pad.t + (1 - skylineAt(m.skyline, (m.azFrom + m.azTo) / 2) / 90) * H;
+        const yT = this._y(m.top ?? 90, h), yB = this._y(skylineAt(m.skyline, (m.azFrom + m.azTo) / 2), h);
         ctx.strokeStyle = `rgba(${C.phosphor},0.45)`; ctx.setLineDash([4, 4]); ctx.strokeRect(xa, yT, xb - xa, yB - yT); ctx.setLineDash([]);
       }
     }
-    // grid
+    ctx.restore();
+    // grid: label steps chosen so labels never collide
     ctx.strokeStyle = `rgba(${C.grid},0.18)`; ctx.fillStyle = `rgba(${C.grid},0.6)`; ctx.font = "10px 'B612 Mono', monospace"; ctx.lineWidth = 1;
-    for (let el = 0; el <= 90; el += 15) { const y = pad.t + (1 - el / 90) * H; ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + W, y); ctx.stroke(); ctx.fillText(el + "°", 4, y + 3); }
-    const step = [5, 10, 15, 30, 45, 90].find(st => W * st / (a1 - a0) >= 34) || 90; // labels never collide
+    const es = [1, 2, 5, 10, 15, 30].find(st => H * st / (e1 - e0) >= 22) || 30;
+    for (let el = Math.ceil(e0 / es) * es; el <= e1 + 1e-9; el += es) { const y = this._y(el, h); ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + W, y); ctx.stroke(); ctx.fillText(el + "°", 4, y + 3); }
+    const step = [1, 2, 5, 10, 15, 30, 45, 90].find(st => W * st / (a1 - a0) >= 34) || 90;
     for (let a = Math.ceil(a0 / step) * step; a <= a1; a += step) { const x = pad.l + ((a - a0) / (a1 - a0)) * W; ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, pad.t + H); ctx.stroke(); ctx.fillText(String(norm360(a)).padStart(3, "0"), x - 10, h - 8); }
-    // points
+    // planes (not while editing: the outline is the subject)
     ctx.font = "11px 'B612 Mono', monospace";
     const labels = [];
-    const order = this.points.slice().sort((a, b) => (b.id === this.lockId) - (a.id === this.lockId) || (a.state === "visible" ? -1 : 1));
+    const order = this.edit ? [] : this.points.slice().sort((a, b) => (b.id === this.lockId) - (a.id === this.lockId) || (a.state === "visible" ? -1 : 1));
     for (const p of order) {
-      const [x, y, ok] = this._xy(p.az, Math.max(-5, p.el), w, h); if (!ok || p.el < -2) continue;
+      if (p.el < e0 - 2 || p.el > e1) continue;
+      const [x, y, ok] = this._xy(p.az, p.el, w, h); if (!ok) continue;
       const a = p.state === "visible" ? 0.95 : p.state === "marginal" ? 0.6 : 0.3;
       ctx.fillStyle = `rgba(${C.phosphor},${a})`; ctx.beginPath(); ctx.arc(x, y, p.state === "hidden" ? 2 : 3, 0, Math.PI * 2); ctx.fill();
-      // label only what you could actually see (plus the lock), and never on top of another label
       if (p.state !== "hidden" || p.id === this.lockId) {
         const wl = ctx.measureText(p.label).width, r = { x0: x + 5, x1: x + 7 + wl, y0: y - 14, y1: y };
         if (!labels.some(q => r.x0 < q.x1 && r.x1 > q.x0 && r.y0 < q.y1 && r.y1 > q.y0)) { labels.push(r); ctx.fillText(p.label, x + 6, y - 4); }
       }
       if (p.id === this.lockId) { ctx.strokeStyle = `rgb(${C.flash})`; ctx.lineWidth = 1.5; ctx.strokeRect(x - 9, y - 9, 18, 18); ctx.lineWidth = 1; }
+    }
+    // edit: cleaned-up preview (amber, faint), the outline, handles
+    if (this.edit) {
+      const E = this.edit;
+      polyPath(E.poly); ctx.strokeStyle = `rgba(${C.flash},0.55)`; ctx.lineWidth = 1.5; ctx.stroke();
+      if (E.preview) { polyPath(E.preview); ctx.strokeStyle = "rgba(255,178,31,0.95)"; ctx.setLineDash([6, 4]); ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]); }
+      ctx.font = "11px 'B612 Mono', monospace";
+      E.poly.forEach((p, i) => {
+        const [x, y] = this._xy(p.az, p.el, w, h), sel = i === E.sel;
+        ctx.fillStyle = sel ? "#ffb21f" : C.glass; ctx.strokeStyle = sel ? "#ffb21f" : `rgb(${C.flash})`; ctx.lineWidth = 2;
+        const r = sel ? 7 : 5; ctx.fillRect(x - r, y - r, 2 * r, 2 * r); ctx.strokeRect(x - r, y - r, 2 * r, 2 * r);
+        if (sel) { ctx.beginPath(); ctx.arc(x, y, 16, 0, Math.PI * 2); ctx.strokeStyle = "rgba(255,178,31,0.6)"; ctx.lineWidth = 1; ctx.stroke(); }
+        ctx.fillStyle = `rgb(${C.flash})`; ctx.fillText(String(i + 1), x + 9, y - 8);
+      });
+      ctx.lineWidth = 1;
     }
     // trace in progress: numbered corners, edges in order, dashed closing edge
     if (this.trace) {
@@ -264,7 +332,6 @@ export class SkyView {
         t.forEach((p, i) => { const [x, y] = this._xy(p.az, p.el, w, h); ctx.fillRect(x - 3, y - 3, 6, 6); ctx.fillText(String(i + 1), x + 6, y - 6); });
         ctx.lineWidth = 1;
       }
-      // live line from the last corner to where you're aiming
       if (this.reticle && t.length) {
         const [x0, y0] = this._xy(t[t.length - 1].az, t[t.length - 1].el, w, h), [x1, y1] = this._xy(this.reticle.az, this.reticle.el, w, h);
         ctx.strokeStyle = `rgba(${C.flash},0.35)`; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke(); ctx.setLineDash([]);
@@ -272,7 +339,7 @@ export class SkyView {
     }
     // aim reticle (live pointing) and locked aim
     for (const [r, live] of [[this.reticle, true], [this.aim, false]]) {
-      if (!r) continue; const [x, y, ok] = this._xy(r.az, r.el, w, h); if (!ok) continue;
+      if (!r || this.edit) continue; const [x, y, ok] = this._xy(r.az, r.el, w, h); if (!ok) continue;
       ctx.strokeStyle = `rgba(${C.flash},${live ? 0.9 : 0.6})`; ctx.lineWidth = 1.2;
       ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI * 2); ctx.moveTo(x - 22, y); ctx.lineTo(x - 8, y); ctx.moveTo(x + 8, y); ctx.lineTo(x + 22, y);
       ctx.moveTo(x, y - 22); ctx.lineTo(x, y - 8); ctx.moveTo(x, y + 8); ctx.lineTo(x, y + 22); ctx.stroke();

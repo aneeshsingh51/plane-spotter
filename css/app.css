@@ -172,6 +172,10 @@ h2.placard { margin: 22px 0 8px; }
 .qr svg { display: block; width: 100%; height: auto; }
 .qr svg rect[fill="#ffffff"], .qr svg path[fill="#ffffff"] { fill: #e9ecdf; }
 .qr p { color: #2a2e28; font-size: 13px; margin: 8px 0 0; }
+.tray-line .amb { color: var(--amber); margin-left: 6px; }
+.keys.four { grid-template-columns: repeat(4, 1fr); }
+.keys .key svg { display: block; margin: 0 auto; }
+.bezel canvas.editing { touch-action: none; cursor: grab; }
 .keys { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 8px; margin-bottom: 10px; }
 .trace { margin: 4px 0 8px; }
 .trace .steps { margin: 6px 0 8px 18px; padding: 0; font-size: 14px; color: #d7dacd; }

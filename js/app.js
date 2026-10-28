@@ -1,13 +1,13 @@
 // app.js — wiring: state, flow, rendering. Geometry lives in geo.js, ranking in score.js.
-import { haversine, bearing, lookAngles, selfTest, norm360, dAz, MI, FT, polyFrame, polySelfIntersects, polySortByAngle, straightenPoly } from "./geo.js?v=18";
-import { store, fetchPositions, normalizeResponse, lookupRoute, lookupAircraft, lookupPhoto, lookupElevation, fetchMetar, linkState, failing, pruneCache, WORKER } from "./data.js?v=18";
-import { rank, incoming, skyState, airportContext, badges, observerHeights, routeFits } from "./score.js?v=18";
-import { Compass, getGPS, steadyDetector, platform } from "./sensors.js?v=18";
-import { Radar, SkyView } from "./radar.js?v=18";
-import { TYPES, AIRLINES, airportLabel, PILOT_JOKES, WILLIS } from "./tables.js?v=18";
+import { haversine, bearing, lookAngles, selfTest, norm360, dAz, MI, FT, polyFrame, polySelfIntersects, polySortByAngle, straightenPoly } from "./geo.js?v=19";
+import { store, fetchPositions, normalizeResponse, lookupRoute, lookupAircraft, lookupPhoto, lookupElevation, fetchMetar, linkState, failing, pruneCache, WORKER } from "./data.js?v=19";
+import { rank, incoming, skyState, airportContext, badges, observerHeights, routeFits } from "./score.js?v=19";
+import { Compass, getGPS, steadyDetector, platform } from "./sensors.js?v=19";
+import { Radar, SkyView } from "./radar.js?v=19";
+import { TYPES, AIRLINES, airportLabel, PILOT_JOKES, WILLIS } from "./tables.js?v=19";
 
 // ---------------------------------------------------------------- constants
-const VERSION = 18;
+const VERSION = 19;
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has("debug");
 const CHICAGO = { lat: 41.90, lon: -87.63, groundM: 181 };
@@ -33,7 +33,7 @@ const S = {
   snap: null, fetching: null, error: null, wx: null,
   chips: new Set(), chipsTouched: false,
   aim: null, aimMode: false, result: null, inc: [], selected: null, tapAt: 0, rankMs: 0,
-  cbuf: [], traceMode: false, trace: [],
+  cbuf: [], traceMode: false, trace: [], editMode: false, edit: null,
   details: {}, view: "scope", demo: null, jokeI: Math.floor(Math.random() * PILOT_JOKES.length),
   log: store.get("ps.log") || [],
 };
@@ -137,7 +137,15 @@ radar.rangeMi = S.settings.rangeMi;
 radar.onRange = r => { S.settings.rangeMi = r; saveSettings(); $("#btnRange").textContent = r + " mi"; };
 $("#btnRange").textContent = radar.rangeMi + " mi";
 $("#btnRange").onclick = () => radar.cycleRange();
-const sky = new SkyView($("#sky"), { onTap: p => S.traceMode ? addCorner(p.az, p.el) : lockAim(p.az, p.el, "tap") });
+const sky = new SkyView($("#sky"), {
+  onTap: p => S.traceMode ? addCorner(p.az, p.el) : lockAim(p.az, p.el, "tap"),
+  onEdit: ev => {
+    if (ev === "drag-start") pushEditHist();
+    if (ev === "drag") updateEditPreview();
+    if (ev === "drag-end") { fitEditRange(false); drawSky(); }
+    renderTray();
+  },
+});
 
 function provider(hex) {
   const a = S.snap?.ac.find(x => x.hex === hex); if (!a || !S.obs) return null;
@@ -161,7 +169,9 @@ function drawSky() {
   sky.mask = mask(); sky.facing = facing(); sky.aim = S.aim; sky.lockId = S.result?.ranked[0]?.a.hex;
   sky.reticle = (S.aimMode || S.traceMode) && compass.state === "live" ? { az: compass.az, el: compass.el } : null;
   sky.trace = S.traceMode ? S.trace : null;
-  sky.fixedRange = S.traceMode ? traceRange() : null;
+  sky.fixedRange = S.traceMode ? traceRange() : S.editMode ? S.edit.range : null;
+  sky.elRange = S.editMode ? S.edit.elRange : null;
+  sky.edit = S.editMode ? S.edit : null;
   sky.points = S.snap && S.obs ? S.snap.ac.filter(a => !a.onGround).map(a => {
     const s = skyState(a, S.obs, mask(), Date.now());
     return { id: a.hex, az: s.az, el: s.el, state: s.state, label: (a.flight || a.reg || a.hex).toUpperCase() };
@@ -418,15 +428,17 @@ function renderAlert() {
 }
 function renderBanner() {
   const st = S.settings, b = $("#banner");
-  if (S.traceMode) b.innerHTML = `<b>Tracing.</b> Sight along the phone's top edge. Mark each corner where open sky meets a building or the frame, in order around the edge. Full steps below the chart.`;
+  if (S.editMode) b.innerHTML = `<b>Editing your view.</b> Drag a corner, or tap one and nudge it with the arrows. Press <b>Done, clean up</b> to save.`;
+  else if (S.traceMode) b.innerHTML = `<b>Tracing.</b> Sight along the phone's top edge. Mark each corner where open sky meets a building or the frame, in order around the edge. Full steps below the chart.`;
   else if (S.demo) b.innerHTML = `Demo: recorded traffic over central Chicago, full sky. Live data is off.`;
   else if (S.away) b.innerHTML = `Away from home: using full sky here. Your window applies at home.`;
-  else if (viewFrame()) { const f = viewFrame(); b.innerHTML = `Your traced view: <b>${pad3(f.azFrom)}°–${pad3(f.azTo)}°</b>, ${fmt(f.elMin)}° to ${fmt(f.elMax)}° up, ${st.poly.length} corners. <button data-trace>Retrace</button>`; }
+  else if (viewFrame()) { const f = viewFrame(); b.innerHTML = `Your traced view: <b>${pad3(f.azFrom)}°–${pad3(f.azTo)}°</b>, ${fmt(f.elMin)}° to ${fmt(f.elMax)}° up, ${st.poly.length} corners. <button data-edit>Edit</button> · <button data-trace>Retrace</button>`; }
   else if (!st.custom && !st.window) b.innerHTML = `Using defaults: full sky, ${fmt(st.eyeM)} m height. <button data-trace>Trace your view</button> for better matches.`;
   else if (st.window) b.innerHTML = `Window <b>${pad3(st.window.azFrom)}°–${pad3(st.window.azTo)}°</b>, sky from ${fmt(Math.min(...st.skyline.map(p => p.el)))}° to ${fmt(st.top)}°. <button data-trace>Trace your view</button> for the real outline.`;
   else b.innerHTML = `Full sky, eye ${fmt(st.eyeM)} m.`;
   b.querySelector("[data-open]")?.addEventListener("click", () => openSettings());
   b.querySelector("[data-trace]")?.addEventListener("click", () => startTrace());
+  b.querySelector("[data-edit]")?.addEventListener("click", () => setEditMode(true));
 }
 function renderFooter() {
   const sn = S.snap;
@@ -493,10 +505,19 @@ const HINT_LIVE = "Point the top edge of your phone at the plane and hold still.
  */
 function renderTray() {
   const line = $("#trayLine"), chips = $("#chips"), btn = $("#btnSee"), keys = $("#traceKeys");
-  const mode = S.traceMode ? "trace" : S.aimMode ? "aim" : "spot";
+  const mode = S.editMode ? "edit" : S.traceMode ? "trace" : S.aimMode ? "aim" : "spot";
   line.hidden = mode === "spot"; chips.hidden = mode !== "spot"; keys.hidden = mode !== "trace";
+  $("#editNudge").hidden = $("#editKeys").hidden = mode !== "edit";
   let label = "I see a plane", text = "";
-  if (mode === "trace") {
+  if (mode === "edit") {
+    const E = S.edit, p = E.sel !== null ? E.poly[E.sel] : null;
+    label = "Done, clean up";
+    text = (p ? `Corner ${E.sel + 1}: <b>${fmtM(p.az, 1)}°</b> az <b>${fmtM(p.el, 1)}°</b> el` : "Drag a corner, or tap one to nudge it.")
+      + (E.preview ? ` <span class="amb">Amber = after cleanup.</span>` : "");
+    for (const id of ["#nudL", "#nudR", "#nudU", "#nudD"]) $(id).disabled = !p;
+    $("#btnEditDel").disabled = !p || E.poly.length <= 3;
+    $("#btnEditUndo").disabled = !E.hist.length;
+  } else if (mode === "trace") {
     const c = compass.state, n = S.trace.length, cc = compassCopy();
     if (c === "live") {
       label = "Mark corner " + (n + 1);
@@ -524,6 +545,7 @@ function renderTray() {
 }
 function setAimMode(on) {
   if (on && S.traceMode) setTraceMode(false);
+  if (on && S.editMode) setEditMode(false);
   S.aimMode = on;
   $("#btnAim").setAttribute("aria-pressed", on);
   $("#aimPanel").hidden = !on;
@@ -557,6 +579,7 @@ function traceRange() {
 }
 function setTraceMode(on) {
   if (on && S.aimMode) setAimMode(false);
+  if (on && S.editMode) setEditMode(false);
   S.traceMode = on;
   $("#tracePanel").hidden = !on;
   renderBanner();
@@ -589,22 +612,104 @@ function markCorner() {
 }
 function saveTrace() {
   if (S.trace.length < 3) { $("#trayLine").textContent = "Mark at least 3 corners first."; return; }
-  let poly = S.trace.map(p => ({ az: +p.az.toFixed(1), el: +p.el.toFixed(1) }));
-  let note = "";
+  const poly = S.trace.map(p => ({ az: +p.az.toFixed(1), el: +p.el.toFixed(1) }));
+  setTraceMode(false);
+  savePoly(poly, "traced");
+}
+/** Order, clean up (straighten) and save an outline; the notice offers to keep it as it was. */
+function savePoly(input, kind) {
+  let poly = input, note = "";
   if (polySelfIntersects(polyFrame(poly).pts)) { poly = polySortByAngle(poly); note = " The corners were out of order, so I put them in order around the middle."; }
   const raw = poly, straight = straightenPoly(poly);
-  if (straight.length >= 3 && !polySelfIntersects(polyFrame(straight).pts)) { poly = straight; note += ` Straightened: frame and tower edges made vertical, window top and rooftops level (${raw.length} → ${poly.length} corners).`; }
+  const changed = JSON.stringify(straight) !== JSON.stringify(raw);
+  if (changed && straight.length >= 3 && !polySelfIntersects(polyFrame(straight).pts)) {
+    poly = straight; note += ` Cleaned up: frame and tower edges vertical, window top and rooftops level (${raw.length} → ${poly.length} corners).`;
+  }
   const st = S.settings; st.poly = poly; st.polyRaw = raw; st.custom = true; saveSettings();
-  setTraceMode(false); setView("sky");
+  setView("sky");
   renderBanner(); updateRadar(); if (S.result) runMatch({ quiet: true });
   const f = viewFrame();
   const el = $("#notice"); el.hidden = false;
   el.innerHTML = `<div class="msg">View saved: ${poly.length} corners, ${pad3(f.azFrom)}°–${pad3(f.azTo)}°, ${fmt(f.elMin)}° to ${fmt(f.elMax)}° up.${esc(note)} Copy your setup link again so your bookmark includes it.
-    <div class="acts"><button class="key small" data-act="copy">Copy setup link</button>${poly !== raw ? `<button class="key small" data-act="raw">Keep as traced</button>` : ""}<button class="key small" data-act="ok">Done</button></div></div>`;
-  el.querySelector('[data-act="raw"]')?.addEventListener("click", e => { st.poly = raw; saveSettings(); renderBanner(); updateRadar(); drawSky(); if (S.result) runMatch({ quiet: true }); e.target.textContent = "Kept as traced"; e.target.disabled = true; });
+    <div class="acts"><button class="key small" data-act="copy">Copy setup link</button>${poly !== raw ? `<button class="key small" data-act="raw">Keep as ${kind}</button>` : ""}<button class="key small" data-act="ok">Done</button></div></div>`;
+  el.querySelector('[data-act="raw"]')?.addEventListener("click", e => { st.poly = raw; saveSettings(); renderBanner(); updateRadar(); drawSky(); if (S.result) runMatch({ quiet: true }); e.target.textContent = `Kept as ${kind}`; e.target.disabled = true; });
   el.querySelector('[data-act="copy"]').onclick = async e => { try { await navigator.clipboard.writeText(makeSetupLink()); e.target.textContent = "Copied. Keep it private"; } catch { openSettings(); } };
   el.querySelector('[data-act="ok"]').onclick = () => { el.hidden = true; };
 }
+// ---------------------------------------------------------------- edit my view
+// Drag (or nudge) the corners of the saved outline; Done cleans it up and saves.
+const cloneP = poly => poly.map(p => ({ az: p.az, el: p.el }));
+function fitEditRange(reset) {
+  const E = S.edit, f = polyFrame(E.poly);
+  const lo = f.center + Math.min(...f.pts.map(p => p.u)) - 8, hi = f.center + Math.max(...f.pts.map(p => p.u)) + 8;
+  const e0 = Math.max(0, f.elMin - 8), e1 = Math.min(90, f.elMax + 8);
+  if (reset || !E.range) { E.range = [lo, hi]; E.elRange = [e0, e1]; return; }
+  // grow only when a corner is dragged near the edge, so the chart doesn't jump while you work
+  const [a0, a1] = E.range, mid = (a0 + a1) / 2;
+  const L = mid + dAz(mid, norm360(lo)), H = mid + dAz(mid, norm360(hi));
+  E.range = [Math.min(a0, L), Math.max(a1, H)];
+  E.elRange = [Math.min(E.elRange[0], e0), Math.max(E.elRange[1], e1)];
+}
+function updateEditPreview() {
+  const E = S.edit; if (!E) return;
+  const st = straightenPoly(E.poly);
+  E.preview = JSON.stringify(st) !== JSON.stringify(E.poly.map(p => ({ az: +p.az.toFixed(1), el: +p.el.toFixed(1) }))) && st.length >= 3 ? st : null;
+}
+function pushEditHist() { const E = S.edit; E.hist.push(JSON.stringify(E.poly)); if (E.hist.length > 60) E.hist.shift(); }
+function setEditMode(on) {
+  if (on) {
+    if (!viewFrame()) return startTrace();
+    if (S.traceMode) setTraceMode(false);
+    if (S.aimMode) setAimMode(false);
+    $("#dlgSettings").open && $("#dlgSettings").close();
+    $("#notice").hidden = true;
+    S.edit = { poly: cloneP(S.settings.poly), sel: null, hist: [] };
+    fitEditRange(true); updateEditPreview();
+  }
+  S.editMode = on;
+  $("#editPanel").hidden = !on;
+  $("#sky").classList.toggle("editing", on);
+  setView("sky"); if (on) window.scrollTo({ top: 0 });
+  renderBanner(); renderTray(); drawSky();
+}
+function nudge(da, de) {
+  const E = S.edit; if (!E || E.sel === null) return;
+  pushEditHist();
+  const p = E.poly[E.sel];
+  E.poly[E.sel] = { az: +norm360(p.az + da).toFixed(1), el: +Math.max(0, Math.min(90, p.el + de)).toFixed(1) };
+  fitEditRange(false); updateEditPreview(); renderTray(); drawSky();
+}
+function editDelete() {
+  const E = S.edit; if (!E || E.sel === null || E.poly.length <= 3) return;
+  pushEditHist(); E.poly.splice(E.sel, 1); E.sel = null; updateEditPreview(); renderTray(); drawSky();
+}
+/** Insert a corner halfway along the edge after the selected corner (or the longest edge). */
+function editAdd() {
+  const E = S.edit; if (!E) return;
+  const n = E.poly.length, len = i => { const a = E.poly[i], b = E.poly[(i + 1) % n]; return Math.hypot(dAz(a.az, b.az) * Math.cos(a.el * Math.PI / 180), b.el - a.el); };
+  let i = E.sel;
+  if (i === null) { i = 0; for (let k = 1; k < n; k++) if (len(k) > len(i)) i = k; }
+  const a = E.poly[i], b = E.poly[(i + 1) % n];
+  pushEditHist();
+  E.poly.splice(i + 1, 0, { az: +norm360(a.az + dAz(a.az, b.az) / 2).toFixed(1), el: +((a.el + b.el) / 2).toFixed(1) });
+  E.sel = i + 1; updateEditPreview(); renderTray(); drawSky();
+}
+function editUndo() { const E = S.edit; if (!E || !E.hist.length) return; E.poly = JSON.parse(E.hist.pop()); if (E.sel !== null && E.sel >= E.poly.length) E.sel = null; updateEditPreview(); renderTray(); drawSky(); }
+function editDone() { const poly = S.edit.poly.map(p => ({ az: +p.az.toFixed(1), el: +p.el.toFixed(1) })); setEditMode(false); savePoly(poly, "edited"); }
+/** Read-only test hook: screen positions of the edit handles. */
+window.__editHandles = () => { if (!S.editMode) return null; const cv = $("#sky"), r = cv.getBoundingClientRect(); return S.edit.poly.map(p => { const [x, y] = sky._xy(p.az, p.el, r.width, r.height); return [r.left + x, r.top + y]; }); };
+$("#nudL").onclick = () => nudge(-0.5, 0); $("#nudR").onclick = () => nudge(0.5, 0);
+$("#nudU").onclick = () => nudge(0, 0.5); $("#nudD").onclick = () => nudge(0, -0.5);
+$("#btnEditUndo").onclick = editUndo; $("#btnEditDel").onclick = editDelete; $("#btnEditAdd").onclick = editAdd;
+$("#btnEditCancel").onclick = () => setEditMode(false);
+// computer: arrows nudge (Shift = 2°), Delete removes, Enter saves, Esc cancels
+document.addEventListener("keydown", e => {
+  if (!S.editMode || e.target.closest?.("input, textarea, dialog")) return;
+  const k = e.shiftKey ? 2 : 0.5;
+  const map = { ArrowLeft: () => nudge(-k, 0), ArrowRight: () => nudge(k, 0), ArrowUp: () => nudge(0, k), ArrowDown: () => nudge(0, -k),
+    Delete: editDelete, Backspace: editDelete, Enter: editDone, Escape: () => setEditMode(false), z: () => (e.metaKey || e.ctrlKey) && editUndo() };
+  if (map[e.key]) { e.preventDefault(); map[e.key](); }
+});
 $("#btnTraceUndo").onclick = () => { S.trace.pop(); renderTray(); drawSky(); };
 $("#btnTraceSave").onclick = saveTrace;
 $("#btnTraceCancel").onclick = () => setTraceMode(false);
@@ -642,6 +747,7 @@ function feedback() {
 
 // ---------------------------------------------------------------- main button
 $("#btnSee").onclick = async () => {
+  if (S.editMode) return editDone();
   if (S.traceMode) {
     const c = compass.state;
     if (c === "live") return markCorner();
@@ -719,7 +825,7 @@ function openSettings(focus) {
   </fieldset>
   <fieldset><legend class="placard">Your view</legend>
     <p>${viewFrame() ? `Traced: <span class="val">${st.poly.length}</span> corners, <span class="val">${pad3(viewFrame().azFrom)}°–${pad3(viewFrame().azTo)}°</span>, ${fmt(viewFrame().elMin)}° to ${fmt(viewFrame().elMax)}° up. This outline overrides the simple window below.` : "Not traced yet. Trace the outline of the sky you can see: building edges, rooftops and window frame."}</p>
-    <div class="btns"><button class="key small lit" aria-pressed="true" id="btnStartTrace">${viewFrame() ? "Retrace my view" : "Trace my view"}</button>${viewFrame() ? `<button class="key small" id="btnStraighten">Straighten</button><button class="key small" id="btnClearTrace">Clear traced view</button>` : ""}</div>
+    <div class="btns"><button class="key small lit" aria-pressed="true" id="btnStartTrace">${viewFrame() ? "Retrace my view" : "Trace my view"}</button>${viewFrame() ? `<button class="key small" id="btnEditView">Edit corners</button><button class="key small" id="btnStraighten">Straighten</button><button class="key small" id="btnClearTrace">Clear traced view</button>` : ""}</div>
     <p id="viewMsg"></p>
   </fieldset>
   <fieldset><legend class="placard">Simple window (fallback)</legend>
@@ -757,6 +863,7 @@ function openSettings(focus) {
     <div class="btns"><button class="key small" id="btnClear">Clear saved data</button></div>
   </fieldset>`;
   $("#btnStartTrace").onclick = () => startTrace();
+  $("#btnEditView") && ($("#btnEditView").onclick = () => setEditMode(true));
   $("#btnStraighten") && ($("#btnStraighten").onclick = () => {
     const before = st.poly.length, next = straightenPoly(st.poly);
     if (next.length < 3 || polySelfIntersects(polyFrame(next).pts)) { $("#viewMsg").textContent = "This outline can't be straightened safely; kept as is."; return; }

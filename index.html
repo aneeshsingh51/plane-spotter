@@ -6,9 +6,9 @@
 <title>Plane Spotter</title>
 <meta name="description" content="Tap when you see a plane. Get the flight, type, route and a confidence score.">
 <meta name="theme-color" content="#2a2e28">
-<link rel="manifest" href="manifest.webmanifest?v=18">
-<link rel="icon" href="icons/icon.svg?v=18" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=18">
+<link rel="manifest" href="manifest.webmanifest?v=19">
+<link rel="icon" href="icons/icon.svg?v=19" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=19">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -16,9 +16,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=B612:wght@400;700&family=B612+Mono&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/app.css?v=18">
+<link rel="stylesheet" href="css/app.css?v=19">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.9.0/suncalc.min.js" defer></script>
-<script type="module" src="js/app.js?v=18"></script>
+<script type="module" src="js/app.js?v=19"></script>
 </head>
 <body>
 <div class="app">
@@ -60,6 +60,15 @@
     </div>
   </section>
 
+  <section class="trace" id="editPanel" hidden>
+    <h2 class="placard">Edit my view</h2>
+    <ol class="steps">
+      <li>Drag a corner to move it. The chart is zoomed in on your outline, so small moves are precise.</li>
+      <li>Or tap a corner and use the arrows: 0.5° per tap. On a computer, use the arrow keys (Shift for 2°).</li>
+      <li><b>Add</b> puts a new corner halfway along the next edge. <b>Delete</b> removes the selected corner.</li>
+      <li>The amber dashes preview the cleanup. Press <b>Done, clean up</b> to save it.</li>
+    </ol>
+  </section>
   <section class="trace" id="tracePanel" hidden>
     <h2 class="placard">Trace my view</h2>
     <ol class="steps">
@@ -87,6 +96,15 @@
 <div class="tray">
   <div class="tray-in">
     <p class="tray-line" id="trayLine" aria-live="polite" hidden></p>
+    <div class="keys four" id="editNudge" hidden>
+      <button class="key" id="nudL" aria-label="Nudge left 0.5°"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M13 4 5 10l8 6z"/></svg></button><button class="key" id="nudU" aria-label="Nudge up 0.5°"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M4 13l6-8 6 8z"/></svg></button><button class="key" id="nudD" aria-label="Nudge down 0.5°"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M4 7l6 8 6-8z"/></svg></button><button class="key" id="nudR" aria-label="Nudge right 0.5°"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M7 4l8 6-8 6z"/></svg></button>
+    </div>
+    <div class="keys four" id="editKeys" hidden>
+      <button class="key" id="btnEditUndo">Undo</button>
+      <button class="key" id="btnEditDel">Delete</button>
+      <button class="key" id="btnEditAdd">Add</button>
+      <button class="key" id="btnEditCancel">Cancel</button>
+    </div>
     <div class="keys" id="traceKeys" hidden>
       <button class="key" id="btnTraceUndo">Undo</button>
       <button class="key" id="btnTraceCancel">Cancel</button>
