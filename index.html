@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Plane Spotter</title>
+<meta name="description" content="Tap when you see a plane. Get the flight, type, route and a confidence score.">
+<meta name="theme-color" content="#2a2e28">
+<link rel="manifest" href="manifest.webmanifest?v=12">
+<link rel="icon" href="icons/icon.svg?v=12" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Spotter">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=B612:wght@400;700&family=B612+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/app.css?v=12">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.9.0/suncalc.min.js" defer></script>
+<script type="module" src="js/app.js?v=12"></script>
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <h1 class="placard">Plane Spotter</h1>
+    <button class="lamp" id="lampGps" data-s="off" aria-label="GPS status"><i></i>GPS</button>
+    <button class="lamp" id="lampCmp" data-s="off" aria-label="Compass status"><i></i>CMP</button>
+    <button class="lamp" id="lampLnk" data-s="off" aria-label="Data link status"><i></i>LINK</button>
+    <button class="iconbtn" id="btnSettings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+    </button>
+  </header>
+  <div id="lampMsg" class="msg" hidden></div>
+  <div id="alert" hidden></div>
+  <p id="banner" class="note"></p>
+
+  <div class="bezel" id="bezel">
+    <canvas id="radar" aria-label="Radar scope centred on you"></canvas>
+    <canvas id="sky" aria-label="Sky view of your window" hidden></canvas>
+    <div class="crt"></div>
+  </div>
+
+  <div class="switches">
+    <div class="seg" role="group" aria-label="View">
+      <button class="key" id="vScope" aria-pressed="true">Scope</button>
+      <button class="key" id="vSky" aria-pressed="false">Sky</button>
+    </div>
+    <button class="key small" id="btnRange" aria-label="Scope range">12 mi</button>
+    <button class="key lit" id="btnAim" aria-pressed="false">Aim</button>
+  </div>
+
+  <section class="aim" id="aimPanel" hidden>
+    <div class="vf" id="vf" hidden><video id="video" playsinline muted></video></div>
+    <div class="read" aria-live="off">
+      <span><small>AZ</small><b id="aimAz">---.-</b></span>
+      <span><small>EL</small><b id="aimEl">--.-</b></span>
+      <span><small>STEADY</small><b id="aimSteady">--</b></span>
+    </div>
+    <p class="note" id="aimHint">Point the top edge of your phone at the plane and hold still. It locks by itself.</p>
+    <div class="row">
+      <button class="key" id="btnCompass" hidden>Turn on compass</button>
+      <button class="key" id="btnLock">Lock</button>
+      <button class="key" id="btnCam">Camera</button>
+      <button class="key" id="btnAimOff">Clear aim</button>
+    </div>
+  </section>
+
+  <section class="results" id="results" aria-live="polite"></section>
+  <section id="incomingSec" hidden>
+    <h2 class="placard">Incoming, next 2 min</h2>
+    <ul class="inc" id="incoming"></ul>
+  </section>
+
+  <section id="debug" hidden></section>
+
+  <footer class="foot" id="foot"></footer>
+</div>
+
+<div class="tray">
+  <div class="tray-in">
+    <div class="chips" role="group" aria-label="What you see">
+      <button class="chip" data-chip="high" aria-pressed="false">High &amp; small</button>
+      <button class="chip" data-chip="low" aria-pressed="false">Low &amp; big</button>
+      <button class="chip" data-chip="left" aria-pressed="false">Moving left</button>
+      <button class="chip" data-chip="right" aria-pressed="false">Moving right</button>
+      <button class="chip" data-chip="toward" aria-pressed="false">Coming toward me</button>
+      <button class="chip" data-chip="away" aria-pressed="false">Going away</button>
+      <button class="chip" data-chip="contrail" aria-pressed="false">Contrail</button>
+      <button class="chip" data-chip="lights" aria-pressed="false">Lights only</button>
+      <button class="chip" data-chip="heard" aria-pressed="false">Heard, not seen</button>
+    </div>
+    <button class="push" id="btnSee">I see a plane</button>
+  </div>
+</div>
+
+<dialog id="dlgSettings" aria-label="Settings">
+  <div class="dlg-head"><h2 class="placard">Settings</h2><button class="key small" data-close>Done</button></div>
+  <div class="dlg-body" id="settingsBody"></div>
+</dialog>
+<dialog id="dlgLog" aria-label="Spotter log">
+  <div class="dlg-head"><h2 class="placard">Spotter log</h2><button class="key small" data-close>Done</button></div>
+  <div class="dlg-body" id="logBody"></div>
+</dialog>
+</body>
+</html>
