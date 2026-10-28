@@ -2,7 +2,7 @@
 // Positions go through our Cloudflare Worker (the upstreams send no CORS headers).
 // Lookups go direct: adsbdb, hexdb, Planespotters, Open-Meteo all allow browser calls.
 
-import { NM } from "./geo.js?v=16";
+import { NM } from "./geo.js?v=18";
 
 export const WORKER = "https://plane-spotter-proxy.aneeshsingh51.workers.dev";
 const LOOKUP_TIMEOUT = 2500;

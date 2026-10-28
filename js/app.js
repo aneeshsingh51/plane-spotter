@@ -1,13 +1,13 @@
 // app.js — wiring: state, flow, rendering. Geometry lives in geo.js, ranking in score.js.
-import { haversine, bearing, lookAngles, selfTest, norm360, dAz, MI, FT, polyFrame, polySelfIntersects, polySortByAngle } from "./geo.js?v=16";
-import { store, fetchPositions, normalizeResponse, lookupRoute, lookupAircraft, lookupPhoto, lookupElevation, fetchMetar, linkState, failing, pruneCache, WORKER } from "./data.js?v=16";
-import { rank, incoming, skyState, airportContext, badges, observerHeights, routeFits } from "./score.js?v=16";
-import { Compass, getGPS, steadyDetector, platform } from "./sensors.js?v=16";
-import { Radar, SkyView } from "./radar.js?v=16";
-import { TYPES, AIRLINES, airportLabel, PILOT_JOKES, WILLIS } from "./tables.js?v=16";
+import { haversine, bearing, lookAngles, selfTest, norm360, dAz, MI, FT, polyFrame, polySelfIntersects, polySortByAngle, straightenPoly } from "./geo.js?v=18";
+import { store, fetchPositions, normalizeResponse, lookupRoute, lookupAircraft, lookupPhoto, lookupElevation, fetchMetar, linkState, failing, pruneCache, WORKER } from "./data.js?v=18";
+import { rank, incoming, skyState, airportContext, badges, observerHeights, routeFits } from "./score.js?v=18";
+import { Compass, getGPS, steadyDetector, platform } from "./sensors.js?v=18";
+import { Radar, SkyView } from "./radar.js?v=18";
+import { TYPES, AIRLINES, airportLabel, PILOT_JOKES, WILLIS } from "./tables.js?v=18";
 
 // ---------------------------------------------------------------- constants
-const VERSION = 16;
+const VERSION = 18;
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has("debug");
 const CHICAGO = { lat: 41.90, lon: -87.63, groundM: 181 };
@@ -49,9 +49,15 @@ const b64u = { enc: s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g, "-
 function readSetupHash() {
   const m = location.hash.match(/setup=([A-Za-z0-9_-]+)/);
   if (!m) return null;
+  const ok = applySetup(m[1]);
+  history.replaceState(null, "", location.pathname + location.search);
+  return ok;
+}
+/** Apply a setup code (the part after #setup=). Used by the link, the paste box and the QR. */
+function applySetup(code) {
   let ok = false;
   try {
-    const j = JSON.parse(b64u.dec(m[1]));
+    const j = JSON.parse(b64u.dec(code));
     const st = S.settings;
     if (Number.isFinite(j.lat) && Number.isFinite(j.lon)) st.home = { lat: j.lat, lon: j.lon, groundM: Number.isFinite(j.ground) ? j.ground : st.home.groundM };
     if (Number.isFinite(j.eye)) st.eyeM = j.eye;
@@ -60,13 +66,14 @@ function readSetupHash() {
     if (Number.isFinite(j.sky)) st.skyline = [{ az: 0, el: j.sky }];
     else if (Array.isArray(j.sky)) st.skyline = j.sky.map(([az, el]) => ({ az, el }));
     if (Number.isFinite(j.top)) st.top = j.top;
-    if (Array.isArray(j.view) && j.view.length >= 3) st.poly = j.view.map(([az, el]) => ({ az: +az, el: +el }));
     if (Number.isFinite(j.decl)) st.declination = j.decl;
     if (Number.isFinite(j.off)) st.headingOffset = j.off;
+    if (Array.isArray(j.view) && j.view.length >= 3) st.poly = j.view.map(([az, el]) => ({ az: +az, el: +el }));
+    else if (j.view === null) st.poly = null;
     st.custom = true;
     saveSettings(); ok = true;
+    compass.declination = st.declination; compass.offset = st.headingOffset;
   } catch { ok = false; }
-  history.replaceState(null, "", location.pathname + location.search);
   return ok;
 }
 function makeSetupLink() {
@@ -75,7 +82,7 @@ function makeSetupLink() {
     win: st.window ? [st.window.azFrom, st.window.azTo] : undefined,
     sky: st.skyline.length === 1 ? st.skyline[0].el : st.skyline.map(p => [Math.round(p.az), +p.el.toFixed(1)]),
     top: st.top, decl: st.declination, off: st.headingOffset,
-    view: st.poly ? st.poly.map(p => [+p.az.toFixed(1), +p.el.toFixed(1)]) : undefined };
+    view: st.poly ? st.poly.map(p => [+p.az.toFixed(1), +p.el.toFixed(1)]) : null };
   return location.origin + location.pathname + "#setup=" + b64u.enc(JSON.stringify(j));
 }
 
@@ -585,13 +592,16 @@ function saveTrace() {
   let poly = S.trace.map(p => ({ az: +p.az.toFixed(1), el: +p.el.toFixed(1) }));
   let note = "";
   if (polySelfIntersects(polyFrame(poly).pts)) { poly = polySortByAngle(poly); note = " The corners were out of order, so I put them in order around the middle."; }
-  const st = S.settings; st.poly = poly; st.custom = true; saveSettings();
+  const raw = poly, straight = straightenPoly(poly);
+  if (straight.length >= 3 && !polySelfIntersects(polyFrame(straight).pts)) { poly = straight; note += ` Straightened: frame and tower edges made vertical, window top and rooftops level (${raw.length} → ${poly.length} corners).`; }
+  const st = S.settings; st.poly = poly; st.polyRaw = raw; st.custom = true; saveSettings();
   setTraceMode(false); setView("sky");
   renderBanner(); updateRadar(); if (S.result) runMatch({ quiet: true });
   const f = viewFrame();
   const el = $("#notice"); el.hidden = false;
   el.innerHTML = `<div class="msg">View saved: ${poly.length} corners, ${pad3(f.azFrom)}°–${pad3(f.azTo)}°, ${fmt(f.elMin)}° to ${fmt(f.elMax)}° up.${esc(note)} Copy your setup link again so your bookmark includes it.
-    <div class="acts"><button class="key small" data-act="copy">Copy setup link</button><button class="key small" data-act="ok">Done</button></div></div>`;
+    <div class="acts"><button class="key small" data-act="copy">Copy setup link</button>${poly !== raw ? `<button class="key small" data-act="raw">Keep as traced</button>` : ""}<button class="key small" data-act="ok">Done</button></div></div>`;
+  el.querySelector('[data-act="raw"]')?.addEventListener("click", e => { st.poly = raw; saveSettings(); renderBanner(); updateRadar(); drawSky(); if (S.result) runMatch({ quiet: true }); e.target.textContent = "Kept as traced"; e.target.disabled = true; });
   el.querySelector('[data-act="copy"]').onclick = async e => { try { await navigator.clipboard.writeText(makeSetupLink()); e.target.textContent = "Copied. Keep it private"; } catch { openSettings(); } };
   el.querySelector('[data-act="ok"]').onclick = () => { el.hidden = true; };
 }
@@ -709,7 +719,8 @@ function openSettings(focus) {
   </fieldset>
   <fieldset><legend class="placard">Your view</legend>
     <p>${viewFrame() ? `Traced: <span class="val">${st.poly.length}</span> corners, <span class="val">${pad3(viewFrame().azFrom)}°–${pad3(viewFrame().azTo)}°</span>, ${fmt(viewFrame().elMin)}° to ${fmt(viewFrame().elMax)}° up. This outline overrides the simple window below.` : "Not traced yet. Trace the outline of the sky you can see: building edges, rooftops and window frame."}</p>
-    <div class="btns"><button class="key small lit" aria-pressed="true" id="btnStartTrace">${viewFrame() ? "Retrace my view" : "Trace my view"}</button>${viewFrame() ? `<button class="key small" id="btnClearTrace">Clear traced view</button>` : ""}</div>
+    <div class="btns"><button class="key small lit" aria-pressed="true" id="btnStartTrace">${viewFrame() ? "Retrace my view" : "Trace my view"}</button>${viewFrame() ? `<button class="key small" id="btnStraighten">Straighten</button><button class="key small" id="btnClearTrace">Clear traced view</button>` : ""}</div>
+    <p id="viewMsg"></p>
   </fieldset>
   <fieldset><legend class="placard">Simple window (fallback)</legend>
     <p>${st.window ? `Open from <span class="val">${pad3(st.window.azFrom)}°</span> to <span class="val">${pad3(st.window.azTo)}°</span>.` : "Full sky (no window set)."} Point the phone's top edge at each edge of the window.</p>
@@ -736,12 +747,22 @@ function openSettings(focus) {
     <label class="row">Keep screen on <input type="checkbox" id="inWake" ${st.wake ? "checked" : ""}></label>
     <label class="row">Radar ping on lock <input type="checkbox" id="inPing" ${st.ping ? "checked" : ""}></label>
   </fieldset>
-  <fieldset><legend class="placard">Private setup link</legend>
-    <p>Holds your home, height and window. Bookmark it; don't share it.</p>
-    <div class="btns"><button class="key small" id="btnLink">Copy setup link</button><button class="key small" id="btnClear">Clear saved data</button></div>
+  <fieldset id="fsSync"><legend class="placard">Use on another device</legend>
+    <p>Your setup link holds your home, height, compass offset and traced view. Keep it private.</p>
+    <div class="btns"><button class="key small lit" aria-pressed="true" id="btnQr">Show QR code</button><button class="key small" id="btnLink">Copy setup link</button></div>
+    <div id="qrBox" class="qr" hidden></div>
+    <p>Home-screen app on iPhone? It keeps its own storage, separate from Safari. Copy the link, open the app, then paste it here:</p>
+    <div class="pair"><input type="text" id="inSetup" placeholder="Paste setup link" aria-label="Paste setup link" autocomplete="off"><button class="key small" id="btnApplySetup">Apply</button></div>
     <p id="linkMsg"></p>
+    <div class="btns"><button class="key small" id="btnClear">Clear saved data</button></div>
   </fieldset>`;
   $("#btnStartTrace").onclick = () => startTrace();
+  $("#btnStraighten") && ($("#btnStraighten").onclick = () => {
+    const before = st.poly.length, next = straightenPoly(st.poly);
+    if (next.length < 3 || polySelfIntersects(polyFrame(next).pts)) { $("#viewMsg").textContent = "This outline can't be straightened safely; kept as is."; return; }
+    st.poly = next; saveSettings(); renderBanner(); updateRadar(); drawSky(); if (S.result) runMatch({ quiet: true });
+    openSettings(); $("#viewMsg").textContent = `Straightened: ${before} → ${next.length} corners.`;
+  });
   $("#btnClearTrace") && ($("#btnClearTrace").onclick = () => { st.poly = null; saveSettings(); renderBanner(); updateRadar(); if (S.result) runMatch({ quiet: true }); openSettings(); });
   const need = (fn, msgEl) => () => { if (compass.state !== "live") { $(msgEl).textContent = "Turn on the compass first: tap Aim, then Turn on compass."; return; } fn(); };
   const done = () => { saveSettings(); setObserver(S.obs.lat, S.obs.lon, S.obs.groundM, S.locSource); renderBanner(); updateRadar(); if (S.result) runMatch({ quiet: true }); };
@@ -800,6 +821,23 @@ function openSettings(focus) {
     const link = makeSetupLink();
     try { await navigator.clipboard.writeText(link); $("#linkMsg").textContent = "Copied. Keep it private."; }
     catch { $("#linkMsg").innerHTML = `Copy this link: <input type="text" readonly value="${esc(link)}">`; }
+  };
+  $("#btnQr").onclick = async () => {
+    const box = $("#qrBox");
+    if (!box.hidden) { box.hidden = true; box.innerHTML = ""; return; }
+    try {
+      if (!window.qrcode) await new Promise((ok, bad) => { const sc = document.createElement("script"); sc.src = "js/vendor/qrcode.js?v=" + VERSION; sc.onload = ok; sc.onerror = bad; document.head.appendChild(sc); });
+      const q = qrcode(0, "M"); q.addData(makeSetupLink()); q.make();
+      box.innerHTML = q.createSvgTag({ cellSize: 4, margin: 4, scalable: true }) + `<p>Point the other phone's camera at this. It opens Plane Spotter with your setup.</p>`;
+      box.hidden = false;
+    } catch { $("#linkMsg").textContent = "Couldn't draw the QR code. Use Copy setup link instead."; }
+  };
+  $("#btnApplySetup").onclick = () => {
+    const v = $("#inSetup").value.trim(), m = v.match(/setup=([A-Za-z0-9_-]+)/) || v.match(/^([A-Za-z0-9_-]{20,})$/);
+    if (!m) { $("#linkMsg").textContent = "That doesn't look like a setup link. It should contain #setup=."; return; }
+    if (!applySetup(m[1])) { $("#linkMsg").textContent = "That setup link is damaged. Copy it again from the other device."; return; }
+    setObserver(st.home.lat, st.home.lon, st.home.groundM, "home"); renderBanner(); updateRadar(); drawSky(); if (S.result) runMatch({ quiet: true });
+    openSettings(); $("#linkMsg").textContent = "Setup applied. This device now matches the other one.";
   };
   $("#btnClear").onclick = () => { try { localStorage.clear(); } catch {} location.reload(); };
   const dlg = $("#dlgSettings"); if (!dlg.open) dlg.showModal();

@@ -134,6 +134,50 @@ export function polySortByAngle(poly) {
 }
 
 /**
+ * Straighten a hand-traced outline. Window frames and tower edges are vertical in the world, so they
+ * are constant azimuth on the sky; window tops and rooftops are near-constant elevation. So:
+ *   1. drop corners closer than `minGap`° to the next one (double taps),
+ *   2. classify each edge: within `tol`° of vertical → V, within `tol`° of horizontal → H, else sloped,
+ *   3. drop a corner between two V or two H edges only if it sits within `maxDev`° of the line between
+ *      its neighbours (a redundant mid-point or a thin spike); a real bend in the rooftops stays,
+ *   4. snap: V edges get one azimuth, H edges one elevation (the mean of their two ends).
+ * Repeats until nothing moves. Sloped edges keep their ends.
+ */
+export function straightenPoly(poly, { tol = 18, minGap = 0.8, maxDev = 2 } = {}) {
+  const frame = polyFrame(poly), center = frame.center;
+  let pts = frame.pts.map(p => ({ u: p.u, v: p.v }));
+  const classify = () => pts.map((a, i) => {
+    const b = pts[(i + 1) % pts.length], k = Math.cos(rad((a.v + b.v) / 2));
+    const ang = deg(Math.atan2(Math.abs(b.v - a.v), Math.abs((b.u - a.u) * k)));
+    return { type: ang >= 90 - tol ? "V" : ang <= tol ? "H" : "S", u: (a.u + b.u) / 2, v: (a.v + b.v) / 2 };
+  });
+  // distance (deg) from corner i to the line through its neighbours, in the (u·cos v, v) sky metric
+  const dev = i => {
+    const n = pts.length, a = pts[(i - 1 + n) % n], p = pts[i], b = pts[(i + 1) % n], k = Math.cos(rad(p.v));
+    const ax = a.u * k, ay = a.v, bx = b.u * k, by = b.v, px = p.u * k, py = p.v, L = Math.hypot(bx - ax, by - ay);
+    return L < 1e-9 ? Math.hypot(px - ax, py - ay) : Math.abs((bx - ax) * (ay - py) - (ax - px) * (by - ay)) / L;
+  };
+  // 1–3: decide on the traced (unsnapped) positions, so snapping can't erode real bends
+  for (let guard = 0; guard < 100 && pts.length > 3; guard++) {
+    const n = pts.length;
+    const near = pts.findIndex((p, i) => { const q = pts[(i + 1) % n]; return Math.hypot((p.u - q.u) * Math.cos(rad(p.v)), p.v - q.v) < minGap; });
+    if (near >= 0) { pts.splice(near, 1); continue; }
+    const e = classify();
+    const drop = pts.findIndex((p, i) => { const e0 = e[(i - 1 + n) % n], e1 = e[i]; return e0.type !== "S" && e0.type === e1.type && dev(i) < maxDev; });
+    if (drop < 0) break;
+    pts.splice(drop, 1);
+  }
+  // 4: snap once
+  const e = classify(), n = pts.length;
+  pts = pts.map((p, i) => {
+    const e0 = e[(i - 1 + n) % n], e1 = e[i], same = e0.type === e1.type;
+    return { u: same && e0.type === "V" ? p.u : e0.type === "V" ? e0.u : e1.type === "V" ? e1.u : p.u,
+             v: same && e0.type === "H" ? p.v : e0.type === "H" ? e0.v : e1.type === "H" ? e1.v : p.v };
+  });
+  return pts.map(p => ({ az: +norm360(center + p.u).toFixed(1), el: +p.v.toFixed(1) }));
+}
+
+/**
  * Signed angular distance (deg) from a sky direction to a traced outline: + inside, - outside.
  * Distances use (u·cos el, v) so azimuth gaps shrink with elevation like they do on the sky.
  */
@@ -248,6 +292,12 @@ export function selfTest() {
   out.push(T("6 compass top-edge az (α=165,β=45)", p.az, 195), T("6 compass el", p.el, 45));
   // traced outline: an L-shaped view (a near tower cuts the lower-left corner)
   const fr = polyFrame([{ az: 175, el: 40 }, { az: 225, el: 40 }, { az: 225, el: 12 }, { az: 195, el: 12 }, { az: 195, el: 25 }, { az: 175, el: 25 }]);
+  // straightening: a wobbly 5-corner trace of a 40°-wide window becomes a clean 4-corner box
+  const st8 = straightenPoly([{ az: 180.4, el: 40.9 }, { az: 199.8, el: 39.6 }, { az: 220.6, el: 40.3 }, { az: 219.2, el: 20.4 }, { az: 179.6, el: 19.6 }]);
+  out.push({ name: "8 straighten: 5 wobbly corners → 4", got: st8.length, want: 4, pass: st8.length === 4 },
+    T("8 straighten: left edge az", Math.min(...st8.map(p => p.az)), 180.0), T("8 straighten: top el", Math.max(...st8.map(p => p.el)), 40.3, 0.6));
+  const zz = straightenPoly([{ az: 182, el: 41 }, { az: 231, el: 41 }, { az: 231, el: 13 }, { az: 215, el: 15 }, { az: 205, el: 11 }, { az: 195, el: 16 }, { az: 182, el: 14 }]);
+  out.push(T("9 straighten keeps a real 4° rooftop dip", Math.min(...zz.filter(p => p.az > 200 && p.az < 210).map(p => p.el), 99), 11, 0.6));
   out.push(T("7 outline: inside, 5° below top", polyMargin(210, 35, fr), 5), T("7 outline: in the cut-out corner, 10° az from the tower edge", polyMargin(185, 15, fr), -10 * Math.cos(rad(15))),
     T("7 outline: 4° right of edge at el 30 (az gap × cos el)", polyMargin(229, 30, fr), -4 * Math.cos(rad(30))));
   return out;

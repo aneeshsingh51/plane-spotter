@@ -2,7 +2,7 @@
 // Authentic touches: blips repaint only when the sweep passes them (one rotation = 4.8 s),
 // a blue-white flash on paint that decays to a slow yellow-green afterglow,
 // ARTS-style data blocks (callsign / altitude in hundreds + trend / ground speed).
-import { norm360, dAz, skylineAt } from "./geo.js?v=16";
+import { norm360, dAz, skylineAt } from "./geo.js?v=18";
 
 const C = {
   glass: "#0b130e", phosphor: "185,220,74", flash: "217,236,255", grid: "185,220,74",
