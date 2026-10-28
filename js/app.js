@@ -1,13 +1,13 @@
 // app.js — wiring: state, flow, rendering. Geometry lives in geo.js, ranking in score.js.
-import { haversine, bearing, lookAngles, selfTest, norm360, dAz, MI, FT } from "./geo.js?v=13";
-import { store, fetchPositions, normalizeResponse, lookupRoute, lookupAircraft, lookupPhoto, lookupElevation, fetchMetar, linkState, failing, pruneCache, WORKER } from "./data.js?v=13";
-import { rank, incoming, skyState, airportContext, badges, observerHeights, routeFits } from "./score.js?v=13";
-import { Compass, getGPS, steadyDetector } from "./sensors.js?v=13";
-import { Radar, SkyView } from "./radar.js?v=13";
-import { TYPES, AIRLINES, airportLabel, PILOT_JOKES, WILLIS } from "./tables.js?v=13";
+import { haversine, bearing, lookAngles, selfTest, norm360, dAz, MI, FT } from "./geo.js?v=14";
+import { store, fetchPositions, normalizeResponse, lookupRoute, lookupAircraft, lookupPhoto, lookupElevation, fetchMetar, linkState, failing, pruneCache, WORKER } from "./data.js?v=14";
+import { rank, incoming, skyState, airportContext, badges, observerHeights, routeFits } from "./score.js?v=14";
+import { Compass, getGPS, steadyDetector } from "./sensors.js?v=14";
+import { Radar, SkyView } from "./radar.js?v=14";
+import { TYPES, AIRLINES, airportLabel, PILOT_JOKES, WILLIS } from "./tables.js?v=14";
 
 // ---------------------------------------------------------------- constants
-const VERSION = 13;
+const VERSION = 14;
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has("debug");
 const CHICAGO = { lat: 41.90, lon: -87.63, groundM: 181 };
@@ -83,13 +83,14 @@ function setObserver(lat, lon, groundM, source) {
 }
 function mask() {
   const st = S.settings;
-  if (!st.window || S.away) return { azFrom: 0, azTo: 360, skyline: S.away ? [{ az: 0, el: 3 }] : st.skyline, top: S.away ? 90 : st.top };
+  const generic = S.away || S.demo; // demo replays traffic at the generic default, so personal masks don't apply
+  if (!st.window || generic) return { azFrom: 0, azTo: 360, skyline: generic ? [{ az: 0, el: 3 }] : st.skyline, top: generic ? 90 : st.top };
   return { azFrom: st.window.azFrom, azTo: st.window.azTo, skyline: st.skyline, top: st.top };
 }
 function facing() {
   if (S.aim) return S.aim.az;
   const w = S.settings.window;
-  if (w && !S.away) return norm360(w.azFrom + (norm360(w.azTo - w.azFrom)) / 2);
+  if (w && !S.away && !S.demo) return norm360(w.azFrom + (norm360(w.azTo - w.azFrom)) / 2);
   return compass.state === "live" ? compass.az : 180;
 }
 
@@ -128,7 +129,7 @@ function provider(hex) {
 }
 function updateRadar() {
   const st = S.settings;
-  radar.window = st.window && !S.away ? st.window : null;
+  radar.window = st.window && !S.away && !S.demo ? st.window : null;
   if (!S.snap || !S.obs) { radar.setTargets([], provider); return; }
   const ids = S.snap.ac.filter(a => !a.onGround && haversine(S.obs.lat, S.obs.lon, a.lat, a.lon) <= st.radiusKm * 1000).map(a => a.hex);
   radar.setTargets(ids, provider);
@@ -345,7 +346,8 @@ function renderAlert() {
 }
 function renderBanner() {
   const st = S.settings, b = $("#banner");
-  if (S.away) b.innerHTML = `Away from home: using full sky here. Your window applies at home.`;
+  if (S.demo) b.innerHTML = `Demo: recorded traffic over central Chicago, full sky. Live data is off.`;
+  else if (S.away) b.innerHTML = `Away from home: using full sky here. Your window applies at home.`;
   else if (!st.custom && !st.window) b.innerHTML = `Using defaults: full sky, ${fmt(st.eyeM)} m height. <button data-open>Calibrate</button> for better matches.`;
   else if (st.window) b.innerHTML = `Window <b>${pad3(st.window.azFrom)}°–${pad3(st.window.azTo)}°</b>, sky from ${fmt(Math.min(...st.skyline.map(p => p.el)))}° to ${fmt(st.top)}°, eye ${fmt(st.eyeM)} m.`;
   else b.innerHTML = `Full sky, eye ${fmt(st.eyeM)} m.`;
